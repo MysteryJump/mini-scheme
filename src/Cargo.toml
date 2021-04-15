@@ -1,0 +1,6 @@
+[workspace]
+
+members = [
+    "./mini-scheme",
+    "./mini-scheme-driver"
+]
