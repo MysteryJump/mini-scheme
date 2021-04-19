@@ -73,7 +73,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse_toplevel(&mut self) -> Option<TopLevel> {
+    pub fn parse_toplevel(&self) -> Option<TopLevel> {
         match self.tokens.lookahead(1) {
             Some(s) => match s.kind {
                 TokenKind::OpenParen => Some(match self.tokens.lookahead(2) {
@@ -384,7 +384,11 @@ impl<'a> Parser<'a> {
                 if ids.is_empty() {
                     panic!()
                 }
-                let name = ids.swap_remove(0);
+                let name = {
+                    let n = ids[0];
+                    ids = (&ids[1..]).to_vec();
+                    n
+                };
                 let ids = (
                     name,
                     ids,

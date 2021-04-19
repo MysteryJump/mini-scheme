@@ -181,7 +181,7 @@ fn string<'a>(chars: &mut Chars, src: &'a str, bf: Span) -> Token<'a> {
     }
     let len = (last_ind + 2) as i32;
     Token {
-        kind: TokenKind::Str(&src[1..last_ind]),
+        kind: TokenKind::Str(&src[1..=last_ind]),
         span: Span {
             col: bf.col + 1,
             ln: bf.ln,

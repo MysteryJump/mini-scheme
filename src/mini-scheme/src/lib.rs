@@ -1,8 +1,10 @@
 #![feature(bool_to_option)]
 
+use interpreter::Interpreter;
 use parser::Parser;
 
 mod ast;
+mod interpreter;
 mod lexer;
 mod parser;
 
@@ -16,9 +18,16 @@ pub fn execute(source: &str) -> Result<String, String> {
     //         .filter(|x| !(x == &TokenKind::Other))
     //         .collect::<Vec<_>>()
     // );
-    let mut parser = Parser::new(&lexed);
+    let parser = Parser::new(&lexed);
+    let interpreter = Interpreter::new();
     while let Some(pp) = parser.parse_toplevel() {
-        println!("{:#?}", pp);
+        // println!("{:#?}", pp);
+        match interpreter.execute_toplevel(pp) {
+            Ok(result) => {
+                println!("{}", result)
+            }
+            Err(e) => println!("{}", e),
+        }
     }
     Ok("".to_string())
 }
