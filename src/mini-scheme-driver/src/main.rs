@@ -14,7 +14,14 @@ fn main() {
             1
             (+ (fib (- n 1)) (fib (- n 2))))
         )
-        (fib 10)
+        (define nn (fib 10))
+        nn
+        (set! nn 1000)
+        nn
+        (let fact33 ((x 7) (y 3))
+              (if (= x 0) 1
+              (* y (fact33 (- x 1) y))))
+        (let* ((x 3) (y 4) (z y)) (+ z x))
         "#, // TODO: Add some test
     )
     .unwrap();

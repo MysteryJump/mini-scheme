@@ -184,18 +184,22 @@ impl<'a> Interpreter<'a> {
                             ">=" => execute_number_binary_comparison(NumCompOpKind::Gte, &evaleds),
                             "<" => execute_number_binary_comparison(NumCompOpKind::Lt, &evaleds),
                             "<=" => execute_number_binary_comparison(NumCompOpKind::Lte, &evaleds),
-                            "string?" => execute_type_check(ExpectedTypes::String, &evaleds),
-                            "boolean?" => execute_type_check(ExpectedTypes::Bool, &evaleds),
-                            "number?" => execute_type_check(ExpectedTypes::Num, &evaleds),
-                            "symbol?" => execute_type_check(ExpectedTypes::Symbol, &evaleds),
-                            "procedure?" => execute_type_check(ExpectedTypes::Proc, &evaleds),
+                            "string?" => execute_type_check(Types::String, &evaleds),
+                            "boolean?" => execute_type_check(Types::Bool, &evaleds),
+                            "number?" => execute_type_check(Types::Num, &evaleds),
+                            "symbol?" => execute_type_check(Types::Symbol, &evaleds),
+                            "procedure?" => execute_type_check(Types::Proc, &evaleds),
+                            "not" => execute_not(&evaleds),
+                            "string->number" => {
+                                execute_conversion(ConvType::Str, ConvType::Num, &evaleds)
+                            }
                             _ => todo!(),
                         }
                     }
                     _ => Err("Cannot apply to not-function".to_string()),
                 }
             }
-            Expr::Quote(_) => {
+            Expr::Quote(_se) => {
                 todo!()
             }
             Expr::Set(name, expr) => self
@@ -203,21 +207,76 @@ impl<'a> Interpreter<'a> {
                 .update_entry(name, self.execute_expr(*expr.clone())?)
                 .map_err(|_| "set expr to undefined name".to_string())
                 .map(|_| ExecutionResult::Unit),
-            Expr::Let(_, _, _) => {
-                todo!()
+            Expr::Let(name, binds, body) => {
+                self.env.enter_block();
+                let result = if let Some(name) = name {
+                    let mut calced_bindeds = Vec::new();
+                    let arg_ls = binds.0.iter().map(|x| x.0).collect();
+                    for (id, expr) in &binds.0 {
+                        calced_bindeds.push((id, expr.clone()));
+                    }
+
+                    let func = ExecutionResult::Func(Arg::IdList(arg_ls, None), body);
+                    self.env.add_define(name, func);
+                    self.execute_expr(Expr::Apply(
+                        Box::new(Expr::Id(name)),
+                        calced_bindeds
+                            .iter()
+                            .map(|(_, expr)| expr.clone())
+                            .collect(),
+                    ))
+                } else {
+                    let arg_ls = binds.0.iter().map(|x| x.0).collect();
+                    let mut calced_bindeds = Vec::new();
+                    for (_, expr) in &binds.0 {
+                        calced_bindeds.push(expr.clone());
+                    }
+                    self.execute_expr(Expr::Apply(
+                        Box::new(Expr::Lambda(Arg::IdList(arg_ls, None), body)),
+                        calced_bindeds,
+                    ))
+                };
+                self.env.exit_block();
+                result
             }
-            Expr::LetStar(_, _) => {
-                todo!()
+            Expr::LetStar(binds, body) => {
+                self.env.enter_block();
+                let mut bindeds = HashMap::<_, Expr<'a>>::new();
+                let arg_ls = binds.0.iter().map(|x| x.0).collect();
+
+                for (name, expr) in binds.0 {
+                    if let Expr::Id(ex) = expr {
+                        if bindeds.contains_key(ex) {
+                            bindeds.insert(name, bindeds[ex].clone());
+                            continue;
+                        }
+                    }
+                    bindeds.insert(name, expr);
+                }
+
+                let binds = {
+                    let mut binds = Vec::new();
+                    for arg in &arg_ls {
+                        binds.push(bindeds[arg].clone())
+                    }
+                    binds
+                };
+
+                let result = self.execute_expr(Expr::Apply(
+                    Box::new(Expr::Lambda(Arg::IdList(arg_ls, None), body)),
+                    binds,
+                ));
+                self.env.exit_block();
+                result
             }
-            Expr::LetRec(_, _) => {
+            Expr::LetRec(_binds, _body) => {
+                self.env.enter_block();
+                self.env.exit_block();
                 todo!()
             }
             Expr::If(cond, then, els) => {
                 let cond = self.execute_expr(*cond.clone())?;
-                if !matches!(
-                    cond,
-                    ExecutionResult::Bool(false) /*  | ExecutionResult::Unit */
-                ) {
+                if !matches!(cond, ExecutionResult::Bool(false)) {
                     self.execute_expr(*then.clone())
                 } else {
                     match els {
@@ -277,8 +336,32 @@ impl<'a> Interpreter<'a> {
                     .clone();
                 Ok(last)
             }
-            Expr::Do(_) => {
-                todo!()
+            Expr::Do(d) => {
+                self.env.enter_block();
+                let mut map = HashMap::new();
+                for (name, init, step) in &d.0 {
+                    self.env.add_define(name, self.execute_expr(init.clone())?);
+                    map.insert(name, step);
+                }
+                let r = self.execute_expr(*d.1.clone())?;
+                let result;
+                loop {
+                    if !matches!(r, ExecutionResult::Bool(false)) {
+                        result =
+                            d.2.iter()
+                                .map(|x| self.execute_expr(x.clone()))
+                                .collect::<Result<Vec<_>, _>>()?
+                                .last()
+                                .unwrap()
+                                .clone();
+                        break;
+                    } else {
+                        self.execute_body(d.3.clone())?;
+                    }
+                }
+
+                self.env.exit_block();
+                Ok(result)
             }
         }
     }
@@ -319,7 +402,7 @@ pub enum ExecutionResult<'a> {
     Symbol(String),
     Func(Arg<'a>, Body<'a>),
     #[allow(dead_code)]
-    List,
+    List(List<'a>),
     Unit,
     EmbeddedFunc(&'static str),
 }
@@ -345,10 +428,17 @@ impl<'a> Display for ExecutionResult<'a> {
             ExecutionResult::Symbol(_) => todo!(),
             ExecutionResult::Func(_, _) => write!(f, "#<procedure>"),
             ExecutionResult::Unit => write!(f, "()"),
-            ExecutionResult::List => write!(f, "()"),
+            ExecutionResult::List(_) => write!(f, "()"),
             ExecutionResult::EmbeddedFunc(_) => write!(f, "#<procedure>"),
         }
     }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub enum List<'a> {
+    Cons(Box<ExecutionResult<'a>>, Box<List<'a>>),
+    Nil,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -470,7 +560,7 @@ fn execute_number_binary_comparison<'a>(
 }
 
 #[derive(Debug)]
-enum ExpectedTypes {
+enum Types {
     String,
     Num,
     Symbol,
@@ -484,24 +574,80 @@ enum ExpectedTypes {
     Null,
 }
 
-fn execute_type_check<'a>(
-    expected: ExpectedTypes,
-    actually: &[ExecutionResult<'a>],
-) -> EResult<'a> {
+fn execute_type_check<'a>(expected: Types, actually: &[ExecutionResult<'a>]) -> EResult<'a> {
     if actually.len() != 1 {
         Err(("number of arguments needs `1`").to_string())
     } else {
         let f = &actually[0];
         Ok(ExecutionResult::Bool(match expected {
-            ExpectedTypes::String => matches!(f, ExecutionResult::String(_)),
-            ExpectedTypes::Num => matches!(f, ExecutionResult::Number(_)),
-            ExpectedTypes::Symbol => matches!(f, ExecutionResult::Symbol(_)),
-            ExpectedTypes::Bool => matches!(f, ExecutionResult::Bool(_)),
-            ExpectedTypes::Proc => matches!(f, ExecutionResult::Func(_, _)),
-            ExpectedTypes::List => todo!(),
-            ExpectedTypes::Pair => todo!(),
-            ExpectedTypes::Null => todo!(),
+            Types::String => matches!(f, ExecutionResult::String(_)),
+            Types::Num => matches!(f, ExecutionResult::Number(_)),
+            Types::Symbol => matches!(f, ExecutionResult::Symbol(_)),
+            Types::Bool => matches!(f, ExecutionResult::Bool(_)),
+            Types::Proc => matches!(f, ExecutionResult::Func(_, _)),
+            Types::List => todo!(),
+            Types::Pair => todo!(),
+            Types::Null => todo!(),
         }))
+    }
+}
+
+fn execute_not<'a>(vals: &[ExecutionResult<'a>]) -> EResult<'a> {
+    if vals.len() != 1 {
+        Err(("number of arguments needs `1`").to_string())
+    } else {
+        let f = &vals[0];
+        Ok(ExecutionResult::Bool(matches!(
+            f,
+            ExecutionResult::Bool(false)
+        )))
+    }
+}
+
+enum ConvType {
+    Str,
+    Num,
+    #[allow(dead_code)]
+    Sym,
+}
+
+fn execute_conversion<'a>(
+    from_ty: ConvType,
+    to_ty: ConvType,
+    vals: &[ExecutionResult<'a>],
+) -> EResult<'a> {
+    if vals.len() != 1 {
+        Err(("number of arguments needs `1`").to_string())
+    } else {
+        let f = &vals[0];
+        match (from_ty, to_ty) {
+            (ConvType::Str, ConvType::Num) => {
+                if let ExecutionResult::String(s) = f {
+                    Ok(match s.parse::<i64>() {
+                        Ok(s) => ExecutionResult::Number(s),
+                        Err(_) => ExecutionResult::Bool(false),
+                    })
+                } else {
+                    Err("expected type is string?, but actually type is diffrent".to_string())
+                }
+            }
+            (ConvType::Num, ConvType::Str) => {
+                if let ExecutionResult::Number(_s) = f {
+                    // Ok(ExecutionResult::String(&s.to_string()))
+                    // TODO: use CoW?
+                    todo!()
+                } else {
+                    Err("expected type is string?, but actually type is diffrent".to_string())
+                }
+            }
+            (ConvType::Sym, ConvType::Str) => {
+                todo!()
+            }
+            (ConvType::Str, ConvType::Sym) => {
+                todo!()
+            }
+            _ => panic!(),
+        }
     }
 }
 
