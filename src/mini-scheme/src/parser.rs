@@ -11,6 +11,7 @@ use crate::{
 
 use super::ast::Cond;
 
+#[derive(Debug)]
 pub struct TokenStack<'a> {
     ind: Cell<i32>,
     tokens: RefCell<Vec<&'a Token<'a>>>,
@@ -474,10 +475,12 @@ impl<'a> Parser<'a> {
             TokenKind::Ident(id) => Arg::Id(id),
             TokenKind::OpenParen => {
                 let mut ids = Vec::new();
-                while let TokenKind::Ident(id) = self.tokens.next().unwrap().kind {
+                while let TokenKind::Ident(id) = self.tokens.lookahead(1).unwrap().kind {
                     ids.push(id);
+                    self.tokens.next();
                 }
-                match self.tokens.next().unwrap().kind {
+                let kind = self.tokens.next().unwrap();
+                match kind.kind {
                     TokenKind::Dot => {
                         if let TokenKind::Ident(id) = self.tokens.next().unwrap().kind {
                             Arg::IdList(ids, Some(id))
@@ -486,7 +489,9 @@ impl<'a> Parser<'a> {
                         }
                     }
                     TokenKind::CloseParen => Arg::IdList(ids, None),
-                    _ => panic!(),
+                    _ => {
+                        panic!()
+                    }
                 }
             }
             _ => panic!(),

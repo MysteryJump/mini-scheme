@@ -1,10 +1,10 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::Display,
 };
 
-use crate::ast::{Arg, Body, Const, Define, Expr, TopLevel};
+use crate::ast::{Arg, Body, Const, Define, Expr, SExpr, TopLevel};
 
 type EResult<'a> = Result<ExecutionResult<'a>, String>;
 
@@ -40,6 +40,15 @@ impl<'a> Env<'a> {
             .get_mut(&self.current_depth.get())
             .unwrap()
             .insert(name, result);
+    }
+
+    #[allow(dead_code)]
+    pub fn add_defines(&self, pairs: Vec<(&'a str, ExecutionResult<'a>)>) {
+        self.defineds
+            .borrow_mut()
+            .get_mut(&self.current_depth.get())
+            .unwrap()
+            .extend(pairs);
     }
 
     pub fn get_expr_by_def_name(&self, name: &'a str) -> Option<ExecutionResult<'a>> {
@@ -160,8 +169,12 @@ impl<'a> Interpreter<'a> {
                                 Err("Args count is not match".to_string())
                             } else {
                                 self.env.enter_block();
-                                for (key, expr) in ids.iter().zip(arg_apply) {
-                                    self.env.add_define(key, self.execute_expr(expr.clone())?);
+                                for (key, result) in ids
+                                    .iter()
+                                    .zip(arg_apply)
+                                    .map(|(name, expr)| (name, self.execute_expr(expr.clone())))
+                                {
+                                    self.env.add_define(key, result?);
                                 }
                                 let result = self.execute_body(body);
                                 self.env.exit_block();
@@ -193,86 +206,87 @@ impl<'a> Interpreter<'a> {
                             "string->number" => {
                                 execute_conversion(ConvType::Str, ConvType::Num, &evaleds)
                             }
+                            "number->string" => {
+                                execute_conversion(ConvType::Num, ConvType::Str, &evaleds)
+                            }
+                            "string->symbol" => {
+                                execute_conversion(ConvType::Str, ConvType::Sym, &evaleds)
+                            }
+                            "symbol->string" => {
+                                execute_conversion(ConvType::Sym, ConvType::Str, &evaleds)
+                            }
+                            "string-append" => execute_string_append(&evaleds),
                             _ => todo!(),
                         }
                     }
                     _ => Err("Cannot apply to not-function".to_string()),
                 }
             }
-            Expr::Quote(_se) => {
-                todo!()
-            }
+            Expr::Quote(se) => Ok(match se {
+                SExpr::Const(c) => c.into(),
+                SExpr::Id(sym) => ExecutionResult::Symbol(sym.to_string()),
+                SExpr::SExprs(_, _) => todo!(),
+            }),
             Expr::Set(name, expr) => self
                 .env
                 .update_entry(name, self.execute_expr(*expr.clone())?)
                 .map_err(|_| "set expr to undefined name".to_string())
                 .map(|_| ExecutionResult::Unit),
+            // TODO: revise all let evaluation
             Expr::Let(name, binds, body) => {
+                let mut calced_bindeds = Vec::new();
+                for (name, expr) in &binds.0 {
+                    calced_bindeds.push((*name, self.execute_expr(expr.clone())?));
+                }
                 self.env.enter_block();
+                self.env.add_defines(calced_bindeds);
                 let result = if let Some(name) = name {
-                    let mut calced_bindeds = Vec::new();
                     let arg_ls = binds.0.iter().map(|x| x.0).collect();
-                    for (id, expr) in &binds.0 {
-                        calced_bindeds.push((id, expr.clone()));
-                    }
-
-                    let func = ExecutionResult::Func(Arg::IdList(arg_ls, None), body);
+                    let func = ExecutionResult::Func(Arg::IdList(arg_ls, None), body.clone());
                     self.env.add_define(name, func);
-                    self.execute_expr(Expr::Apply(
-                        Box::new(Expr::Id(name)),
-                        calced_bindeds
-                            .iter()
-                            .map(|(_, expr)| expr.clone())
-                            .collect(),
-                    ))
+
+                    self.execute_body(body)
                 } else {
-                    let arg_ls = binds.0.iter().map(|x| x.0).collect();
-                    let mut calced_bindeds = Vec::new();
-                    for (_, expr) in &binds.0 {
-                        calced_bindeds.push(expr.clone());
-                    }
-                    self.execute_expr(Expr::Apply(
-                        Box::new(Expr::Lambda(Arg::IdList(arg_ls, None), body)),
-                        calced_bindeds,
-                    ))
+                    self.execute_body(body)
                 };
                 self.env.exit_block();
                 result
             }
             Expr::LetStar(binds, body) => {
-                self.env.enter_block();
-                let mut bindeds = HashMap::<_, Expr<'a>>::new();
-                let arg_ls = binds.0.iter().map(|x| x.0).collect();
-
-                for (name, expr) in binds.0 {
-                    if let Expr::Id(ex) = expr {
-                        if bindeds.contains_key(ex) {
-                            bindeds.insert(name, bindeds[ex].clone());
-                            continue;
-                        }
-                    }
-                    bindeds.insert(name, expr);
+                let envs_depth = binds.0.len();
+                for (name, expr) in &binds.0 {
+                    self.env.add_define(name, self.execute_expr(expr.clone())?);
+                    self.env.enter_block();
                 }
-
-                let binds = {
-                    let mut binds = Vec::new();
-                    for arg in &arg_ls {
-                        binds.push(bindeds[arg].clone())
-                    }
-                    binds
-                };
-
-                let result = self.execute_expr(Expr::Apply(
-                    Box::new(Expr::Lambda(Arg::IdList(arg_ls, None), body)),
-                    binds,
-                ));
-                self.env.exit_block();
+                let result = self.execute_body(body);
+                for _ in 0..envs_depth {
+                    self.env.exit_block();
+                }
                 result
             }
-            Expr::LetRec(_binds, _body) => {
-                self.env.enter_block();
-                self.env.exit_block();
-                todo!()
+            Expr::LetRec(binds, body) => {
+                let names = binds.0.iter().map(|x| x.0).collect::<Vec<_>>();
+                if names.len() != names.iter().collect::<HashSet<_>>().len() {
+                    Err("Cannot use same variable in bindings of letrec".to_string())
+                } else {
+                    self.env.enter_block();
+                    let undefineds = names
+                        .iter()
+                        .map(|x| (*x, ExecutionResult::Undefined))
+                        .collect();
+                    self.env.add_defines(undefineds);
+
+                    let mut calced_bindeds = Vec::new();
+                    for (name, expr) in &binds.0 {
+                        calced_bindeds.push((*name, self.execute_expr(expr.clone())?));
+                    }
+                    for (name, result) in calced_bindeds {
+                        self.env.update_entry(name, result).unwrap();
+                    }
+                    let result = self.execute_body(body);
+                    self.env.exit_block();
+                    result
+                }
             }
             Expr::If(cond, then, els) => {
                 let cond = self.execute_expr(*cond.clone())?;
@@ -396,7 +410,7 @@ impl<'a> Interpreter<'a> {
 #[derive(Debug, Clone)]
 pub enum ExecutionResult<'a> {
     Number(i64),
-    String(&'a str),
+    String(String),
     Bool(bool),
     #[allow(dead_code)]
     Symbol(String),
@@ -405,12 +419,13 @@ pub enum ExecutionResult<'a> {
     List(List<'a>),
     Unit,
     EmbeddedFunc(&'static str),
+    Undefined,
 }
 
 impl<'a> From<Const<'a>> for ExecutionResult<'a> {
     fn from(c: Const<'a>) -> Self {
         match c {
-            Const::Str(s) => ExecutionResult::String(s),
+            Const::Str(s) => ExecutionResult::String(s.to_string()),
             Const::Bool(b) => ExecutionResult::Bool(b),
             Const::Num(n) => ExecutionResult::Number(n),
             Const::Unit => ExecutionResult::Unit,
@@ -422,14 +437,15 @@ impl<'a> Display for ExecutionResult<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ExecutionResult::Number(n) => write!(f, "{}", n),
-            ExecutionResult::String(s) => write!(f, "{}", s),
+            ExecutionResult::String(s) => write!(f, "\"{}\"", s),
             ExecutionResult::Bool(false) => write!(f, "#f"),
             ExecutionResult::Bool(true) => write!(f, "#t"),
-            ExecutionResult::Symbol(_) => todo!(),
+            ExecutionResult::Symbol(s) => write!(f, "'{}", s),
             ExecutionResult::Func(_, _) => write!(f, "#<procedure>"),
             ExecutionResult::Unit => write!(f, "()"),
             ExecutionResult::List(_) => write!(f, "()"),
             ExecutionResult::EmbeddedFunc(_) => write!(f, "#<procedure>"),
+            ExecutionResult::Undefined => write!(f, "undefined"),
         }
     }
 }
@@ -607,7 +623,6 @@ fn execute_not<'a>(vals: &[ExecutionResult<'a>]) -> EResult<'a> {
 enum ConvType {
     Str,
     Num,
-    #[allow(dead_code)]
     Sym,
 }
 
@@ -632,23 +647,41 @@ fn execute_conversion<'a>(
                 }
             }
             (ConvType::Num, ConvType::Str) => {
-                if let ExecutionResult::Number(_s) = f {
-                    // Ok(ExecutionResult::String(&s.to_string()))
-                    // TODO: use CoW?
-                    todo!()
+                if let ExecutionResult::Number(s) = f {
+                    Ok(ExecutionResult::String(s.to_string()))
                 } else {
                     Err("expected type is string?, but actually type is diffrent".to_string())
                 }
             }
             (ConvType::Sym, ConvType::Str) => {
-                todo!()
+                if let ExecutionResult::Symbol(s) = f {
+                    Ok(ExecutionResult::String(s.to_string()))
+                } else {
+                    Err("expected type is symbol?, but actually type is diffrent".to_string())
+                }
             }
             (ConvType::Str, ConvType::Sym) => {
-                todo!()
+                if let ExecutionResult::String(s) = f {
+                    Ok(ExecutionResult::Symbol(s.to_string()))
+                } else {
+                    Err("expected type is string?, but actually type is diffrent".to_string())
+                }
             }
             _ => panic!(),
         }
     }
+}
+
+fn execute_string_append<'a>(vals: &[ExecutionResult<'a>]) -> EResult<'a> {
+    let mut sp = String::new();
+    for item in vals {
+        if let ExecutionResult::String(s) = item {
+            sp.push_str(s);
+        } else {
+            return Err("string-append needs string?".to_string());
+        }
+    }
+    Ok(ExecutionResult::String(sp))
 }
 
 #[test]
