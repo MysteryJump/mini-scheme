@@ -345,7 +345,6 @@ impl<'a> Parser<'a> {
             },
             TokenKind::Quote => {
                 let sexpr = self.parse_sexpr();
-                println!("{:?}", self.tokens.lookahead(1));
                 Expr::Quote(sexpr)
             }
             TokenKind::Ident(id) => Expr::Id(id),

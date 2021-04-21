@@ -42,7 +42,6 @@ impl<'a> Env<'a> {
             .insert(name, result);
     }
 
-    #[allow(dead_code)]
     pub fn add_defines(&self, pairs: Vec<(&'a str, ExecutionResult<'a>)>) {
         self.defineds
             .borrow_mut()
@@ -216,6 +215,12 @@ impl<'a> Interpreter<'a> {
                                 execute_conversion(ConvType::Sym, ConvType::Str, &evaleds)
                             }
                             "string-append" => execute_string_append(&evaleds),
+                            "null?" => execute_type_check(Types::Null, &evaleds),
+                            "pair?" => execute_type_check(Types::Pair, &evaleds),
+                            "list?" => execute_type_check(Types::List, &evaleds),
+                            "car" => execute_list_operation(ListOperationKind::Car, &evaleds),
+                            "cdr" => execute_list_operation(ListOperationKind::Cdr, &evaleds),
+                            "cons" => execute_list_operation(ListOperationKind::Cons, &evaleds),
                             _ => todo!(),
                         }
                     }
@@ -225,14 +230,24 @@ impl<'a> Interpreter<'a> {
             Expr::Quote(se) => Ok(match se {
                 SExpr::Const(c) => c.into(),
                 SExpr::Id(sym) => ExecutionResult::Symbol(sym.to_string()),
-                SExpr::SExprs(_, _) => todo!(),
+                SExpr::SExprs(m, rest) => {
+                    let results = m
+                        .iter()
+                        .map(|x| self.execute_expr(Expr::Quote(x.clone())))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let rest = if let Some(rest) = rest {
+                        Some(self.execute_expr(Expr::Quote(*rest.clone()))?)
+                    } else {
+                        None
+                    };
+                    ExecutionResult::List((results, rest).into())
+                }
             }),
             Expr::Set(name, expr) => self
                 .env
                 .update_entry(name, self.execute_expr(*expr.clone())?)
                 .map_err(|_| "set expr to undefined name".to_string())
                 .map(|_| ExecutionResult::Unit),
-            // TODO: revise all let evaluation
             Expr::Let(name, binds, body) => {
                 let mut calced_bindeds = Vec::new();
                 for (name, expr) in &binds.0 {
@@ -412,10 +427,8 @@ pub enum ExecutionResult<'a> {
     Number(i64),
     String(String),
     Bool(bool),
-    #[allow(dead_code)]
     Symbol(String),
     Func(Arg<'a>, Body<'a>),
-    #[allow(dead_code)]
     List(List<'a>),
     Unit,
     EmbeddedFunc(&'static str),
@@ -440,21 +453,158 @@ impl<'a> Display for ExecutionResult<'a> {
             ExecutionResult::String(s) => write!(f, "\"{}\"", s),
             ExecutionResult::Bool(false) => write!(f, "#f"),
             ExecutionResult::Bool(true) => write!(f, "#t"),
-            ExecutionResult::Symbol(s) => write!(f, "'{}", s),
+            ExecutionResult::Symbol(s) => write!(f, "{}", s),
             ExecutionResult::Func(_, _) => write!(f, "#<procedure>"),
             ExecutionResult::Unit => write!(f, "()"),
-            ExecutionResult::List(_) => write!(f, "()"),
+            ExecutionResult::List(l) => write!(f, "{}", l),
             ExecutionResult::EmbeddedFunc(_) => write!(f, "#<procedure>"),
             ExecutionResult::Undefined => write!(f, "undefined"),
         }
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum List<'a> {
-    Cons(Box<ExecutionResult<'a>>, Box<List<'a>>),
+    Cons(Box<ExecutionResult<'a>>, Box<ExecutionResult<'a>>),
     Nil,
+}
+
+impl<'a> List<'a> {
+    pub fn new(result: ExecutionResult<'a>) -> Self {
+        Self::Cons(Box::new(result), Box::new(ExecutionResult::List(List::Nil)))
+    }
+
+    pub fn cons(left: ExecutionResult<'a>, right: ExecutionResult<'a>) -> Self {
+        Self::Cons(Box::new(left), Box::new(right))
+    }
+
+    pub fn car(&self) -> ExecutionResult<'a> {
+        match self {
+            List::Cons(car, _) => *car.clone(),
+            List::Nil => ExecutionResult::List(List::Nil),
+        }
+    }
+
+    pub fn cdr(&self) -> ExecutionResult<'a> {
+        match self {
+            List::Cons(_, cdr) => *cdr.clone(),
+            List::Nil => ExecutionResult::List(List::Nil),
+        }
+    }
+
+    pub fn is_list(&self) -> bool {
+        match self {
+            List::Cons(_, cdr) => match *cdr.clone() {
+                ExecutionResult::List(l) => l.is_list(),
+                _ => false,
+            },
+            List::Nil => true,
+        }
+    }
+
+    pub fn get_rest(&self) -> Option<ExecutionResult<'a>> {
+        match self {
+            List::Cons(_, cdr) => match *cdr.clone() {
+                ExecutionResult::List(l) => l.get_rest(),
+                _ => Some(*cdr.clone()),
+            },
+            List::Nil => None,
+        }
+    }
+}
+
+impl<'a> From<List<'a>> for ExecutionResult<'a> {
+    fn from(f: List<'a>) -> Self {
+        Self::List(f)
+    }
+}
+
+impl<'a> From<(Vec<ExecutionResult<'a>>, Option<ExecutionResult<'a>>)> for List<'a> {
+    fn from((ls, rest): (Vec<ExecutionResult<'a>>, Option<ExecutionResult<'a>>)) -> Self {
+        let last = if let Some(rest) = rest {
+            rest
+        } else {
+            List::Nil.into()
+        };
+        let mut list = last;
+        for item in ls.iter().rev() {
+            list = ExecutionResult::List(List::Cons(Box::new(item.clone()), Box::new(list)));
+        }
+
+        if let ExecutionResult::List(ls) = list {
+            ls
+        } else {
+            panic!()
+        }
+    }
+}
+
+impl<'a> From<List<'a>> for (Vec<ExecutionResult<'a>>, Option<ExecutionResult<'a>>) {
+    fn from(f: List<'a>) -> Self {
+        let mut list = Vec::new();
+        let mut cdr = f;
+        loop {
+            list.push(cdr.car());
+            if matches!(cdr.cdr(), ExecutionResult::List(List::Nil)) {
+                return (list, None);
+            } else if !matches!(cdr.cdr(), ExecutionResult::List(_)) {
+                return (list, Some(cdr.cdr()));
+            } else {
+                cdr = if let ExecutionResult::List(ls) = cdr.cdr() {
+                    ls
+                } else {
+                    panic!()
+                }
+            }
+        }
+    }
+}
+
+impl<'a> Display for List<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "(")?;
+        let (list, rest): (Vec<ExecutionResult>, Option<ExecutionResult>) = self.clone().into();
+        write!(
+            f,
+            "{}",
+            list.iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<String>>()
+                .join(" ")
+        )?;
+        if let Some(rest) = rest {
+            write!(f, " . {})", rest)
+        } else {
+            write!(f, ")")
+        }
+    }
+}
+
+#[test]
+fn test_list() {
+    let cons = List::cons(
+        ExecutionResult::Number(3.into()),
+        ExecutionResult::List(List::cons(
+            ExecutionResult::Number(3),
+            ExecutionResult::List(List::Nil),
+        )),
+    );
+    assert_eq!(true, cons.is_list());
+
+    let cons = List::cons(ExecutionResult::List(cons), ExecutionResult::Bool(true));
+    assert_eq!(false, cons.is_list());
+
+    let vecs = vec![
+        ExecutionResult::Number(3),
+        ExecutionResult::Number(4),
+        ExecutionResult::Number(5),
+    ];
+
+    let list: List = (vecs.clone(), None).into();
+    assert_eq!(true, list.is_list());
+
+    let not_list: List = (vecs, Some(ExecutionResult::Number(23))).into();
+    assert_eq!(false, not_list.is_list());
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -582,11 +732,8 @@ enum Types {
     Symbol,
     Bool,
     Proc,
-    #[allow(dead_code)]
     List,
-    #[allow(dead_code)]
     Pair,
-    #[allow(dead_code)]
     Null,
 }
 
@@ -601,9 +748,23 @@ fn execute_type_check<'a>(expected: Types, actually: &[ExecutionResult<'a>]) -> 
             Types::Symbol => matches!(f, ExecutionResult::Symbol(_)),
             Types::Bool => matches!(f, ExecutionResult::Bool(_)),
             Types::Proc => matches!(f, ExecutionResult::Func(_, _)),
-            Types::List => todo!(),
-            Types::Pair => todo!(),
-            Types::Null => todo!(),
+            Types::List => {
+                if let ExecutionResult::List(l) = f {
+                    l.is_list()
+                } else {
+                    false
+                }
+            }
+            Types::Pair => {
+                if let ExecutionResult::List(l) = f {
+                    !matches!(l, List::Nil)
+                } else {
+                    false
+                }
+            }
+            Types::Null => {
+                matches!(f, ExecutionResult::List(List::Nil))
+            }
         }))
     }
 }
@@ -695,5 +856,80 @@ fn test_execute_number_binary_comp() {
         assert_eq!(false, b);
     } else {
         panic!()
+    }
+}
+
+enum ListOperationKind {
+    Car,
+    Cdr,
+    Cons,
+    #[allow(dead_code)]
+    List,
+    #[allow(dead_code)]
+    Length,
+    #[allow(dead_code)]
+    Memq,
+    #[allow(dead_code)]
+    Last,
+    #[allow(dead_code)]
+    Append,
+    #[allow(dead_code)]
+    SetCar,
+    #[allow(dead_code)]
+    SetCdr,
+}
+
+fn execute_list_operation<'a>(
+    operation_kind: ListOperationKind,
+    vals: &[ExecutionResult<'a>],
+) -> EResult<'a> {
+    match operation_kind {
+        // TODO: if values if null?, it returns nil in car or cdr
+        ListOperationKind::Car => {
+            if vals.len() != 1 {
+                Err(("number of arguments needs `1`").to_string())
+            } else if let ExecutionResult::List(ls) = &vals[0] {
+                Ok(ls.car())
+            } else {
+                Err("expected type is pair?, but actually type is diffrent".to_string())
+            }
+        }
+        ListOperationKind::Cdr => {
+            if vals.len() != 1 {
+                Err(("number of arguments needs `1`").to_string())
+            } else if let ExecutionResult::List(ls) = &vals[0] {
+                Ok(ls.cdr())
+            } else {
+                Err("expected type is pair?, but actually type is diffrent".to_string())
+            }
+        }
+        ListOperationKind::Cons => {
+            if vals.len() != 2 {
+                Err(("number of arguments needs `1`").to_string())
+            } else {
+                Ok(List::Cons(Box::new(vals[0].clone()), Box::new(vals[0].clone())).into())
+            }
+        }
+        ListOperationKind::List => {
+            todo!()
+        }
+        ListOperationKind::Length => {
+            todo!()
+        }
+        ListOperationKind::Memq => {
+            todo!()
+        }
+        ListOperationKind::Last => {
+            todo!()
+        }
+        ListOperationKind::Append => {
+            todo!()
+        }
+        ListOperationKind::SetCar => {
+            todo!()
+        }
+        ListOperationKind::SetCdr => {
+            todo!()
+        }
     }
 }
