@@ -44,9 +44,16 @@ fn main() {
         (define cc '(3 (3) (3 #t) . (3 . name)))
         (car cc)
         (car (cdr (cdr cc)))
+        (define lss '(2 2 3 3 (3 . 5)))
+        (length lss)
+        (last '(3 . ()))
+        (append '(3 9 (3 . 3)) '(3))
+        (set-car! lss 5)
+        lss
+        (set-cdr! lss '(3))
+        lss
         "#,
         // TODO: Add some test
-        // TODO: support '() in parser
     )
     .unwrap();
 }

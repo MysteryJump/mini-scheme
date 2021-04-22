@@ -504,6 +504,7 @@ impl<'a> Parser<'a> {
         match next.kind {
             TokenKind::OpenParen => {
                 if self.tokens.lookahead(1).unwrap().kind == TokenKind::CloseParen {
+                    self.tokens.next();
                     SExpr::Const(().into())
                 } else {
                     let mut has_dot = false;

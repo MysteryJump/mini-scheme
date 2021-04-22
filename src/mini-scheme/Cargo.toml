@@ -8,3 +8,4 @@ edition = "2018"
 
 [dependencies]
 if_chain = "1"
+uuid = { version = "0.8", features = ["v4"] }

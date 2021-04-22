@@ -221,6 +221,30 @@ impl<'a> Interpreter<'a> {
                             "car" => execute_list_operation(ListOperationKind::Car, &evaleds),
                             "cdr" => execute_list_operation(ListOperationKind::Cdr, &evaleds),
                             "cons" => execute_list_operation(ListOperationKind::Cons, &evaleds),
+                            "list" => execute_list_operation(ListOperationKind::List, &evaleds),
+                            "length" => execute_list_operation(ListOperationKind::Length, &evaleds),
+                            "last" => execute_list_operation(ListOperationKind::Last, &evaleds),
+                            "append" => execute_list_operation(ListOperationKind::Append, &evaleds),
+                            "set-car!" => {
+                                let result =
+                                    execute_list_operation(ListOperationKind::SetCar, &evaleds)?;
+                                if let Expr::Id(id) = arg_apply[0] {
+                                    self.env
+                                        .update_entry(id, result)
+                                        .map_err(|_| "Cannot find such name.".to_string())?;
+                                }
+                                Ok(ExecutionResult::Unit)
+                            }
+                            "set-cdr!" => {
+                                let result =
+                                    execute_list_operation(ListOperationKind::SetCdr, &evaleds)?;
+                                if let Expr::Id(id) = arg_apply[0] {
+                                    self.env
+                                        .update_entry(id, result)
+                                        .map_err(|_| "Cannot find such name.".to_string())?;
+                                }
+                                Ok(ExecutionResult::Unit)
+                            }
                             _ => todo!(),
                         }
                     }
@@ -228,7 +252,13 @@ impl<'a> Interpreter<'a> {
                 }
             }
             Expr::Quote(se) => Ok(match se {
-                SExpr::Const(c) => c.into(),
+                SExpr::Const(c) => {
+                    if matches!(c, Const::Unit) {
+                        ExecutionResult::List(List::Nil)
+                    } else {
+                        c.into()
+                    }
+                }
                 SExpr::Id(sym) => ExecutionResult::Symbol(sym.to_string()),
                 SExpr::SExprs(m, rest) => {
                     let results = m
@@ -511,6 +541,59 @@ impl<'a> List<'a> {
             List::Nil => None,
         }
     }
+
+    pub fn len(&self) -> Result<usize, ()> {
+        if !self.is_list() {
+            Err(())
+        } else {
+            Ok(Self::len_(self, 0))
+        }
+    }
+
+    fn len_(ls: &List<'a>, depth: usize) -> usize {
+        match ls {
+            List::Cons(_, cdr) => match *cdr.clone() {
+                ExecutionResult::List(l) => Self::len_(&l, depth + 1),
+                _ => panic!(),
+            },
+            List::Nil => depth,
+        }
+    }
+
+    pub fn last(&self) -> Result<ExecutionResult<'a>, &'static str> {
+        if matches!(self, List::Nil) {
+            Err("null?")
+        } else {
+            let mut cdr = self.clone();
+            loop {
+                cdr = if let ExecutionResult::List(ls) = cdr.cdr() {
+                    ls
+                } else {
+                    return Err("list?");
+                };
+                if matches!(cdr.cdr(), ExecutionResult::List(List::Nil)) {
+                    break;
+                }
+            }
+            Ok(ExecutionResult::List(cdr))
+        }
+    }
+
+    pub fn append(first: List<'a>, other: ExecutionResult<'a>) -> List<'a> {
+        let (mut firsts, _) = first.into();
+        if let ExecutionResult::List(other) = other {
+            let (mut others, other_rest) = other.into();
+            firsts.append(&mut others);
+
+            (firsts, other_rest).into()
+        } else {
+            (firsts, Some(other)).into()
+        }
+    }
+
+    pub fn memq(&self, _: ExecutionResult<'a>) -> List<'a> {
+        todo!()
+    }
 }
 
 impl<'a> From<List<'a>> for ExecutionResult<'a> {
@@ -562,20 +645,24 @@ impl<'a> From<List<'a>> for (Vec<ExecutionResult<'a>>, Option<ExecutionResult<'a
 
 impl<'a> Display for List<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "(")?;
-        let (list, rest): (Vec<ExecutionResult>, Option<ExecutionResult>) = self.clone().into();
-        write!(
-            f,
-            "{}",
-            list.iter()
-                .map(|x| x.to_string())
-                .collect::<Vec<String>>()
-                .join(" ")
-        )?;
-        if let Some(rest) = rest {
-            write!(f, " . {})", rest)
+        if let List::Nil = self {
+            write!(f, "()")
         } else {
-            write!(f, ")")
+            write!(f, "(")?;
+            let (list, rest): (Vec<ExecutionResult>, Option<ExecutionResult>) = self.clone().into();
+            write!(
+                f,
+                "{}",
+                list.iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<String>>()
+                    .join(" ")
+            )?;
+            if let Some(rest) = rest {
+                write!(f, " . {})", rest)
+            } else {
+                write!(f, ")")
+            }
         }
     }
 }
@@ -863,19 +950,13 @@ enum ListOperationKind {
     Car,
     Cdr,
     Cons,
-    #[allow(dead_code)]
     List,
-    #[allow(dead_code)]
     Length,
     #[allow(dead_code)]
     Memq,
-    #[allow(dead_code)]
     Last,
-    #[allow(dead_code)]
     Append,
-    #[allow(dead_code)]
     SetCar,
-    #[allow(dead_code)]
     SetCdr,
 }
 
@@ -905,31 +986,124 @@ fn execute_list_operation<'a>(
         }
         ListOperationKind::Cons => {
             if vals.len() != 2 {
-                Err(("number of arguments needs `1`").to_string())
+                Err(("number of arguments needs `2`").to_string())
             } else {
                 Ok(List::Cons(Box::new(vals[0].clone()), Box::new(vals[0].clone())).into())
             }
         }
         ListOperationKind::List => {
-            todo!()
+            let list: List = (vals.to_vec(), None).into();
+            Ok(list.into())
         }
         ListOperationKind::Length => {
-            todo!()
+            if vals.len() != 1 {
+                Err(("number of arguments needs `1`").to_string())
+            } else if let ExecutionResult::List(ls) = &vals[0] {
+                match ls.len() {
+                    Ok(l) => Ok(ExecutionResult::Number(l as i64)),
+                    Err(_) => {
+                        Err("expected type is list?, but actually type is diffrent".to_string())
+                    }
+                }
+            } else {
+                Err("expected type is list?, but actually type is diffrent".to_string())
+            }
         }
         ListOperationKind::Memq => {
             todo!()
         }
         ListOperationKind::Last => {
-            todo!()
+            if vals.len() != 1 {
+                Err(("number of arguments needs `1`").to_string())
+            } else if let ExecutionResult::List(ls) = &vals[0] {
+                ls.last().map_err(|_| {
+                    "expected type is list?, but actually type is diffrent".to_string()
+                })
+            } else {
+                Err("expected type is list?, but actually type is diffrent".to_string())
+            }
         }
         ListOperationKind::Append => {
-            todo!()
+            if vals.is_empty() {
+                Ok(ExecutionResult::List(List::Nil))
+            } else if vals.len() == 1 {
+                Ok(vals[0].clone())
+            } else {
+                let first = &vals[0];
+                let mid = &vals[1..vals.len() - 1];
+
+                if mid.iter().any(|x| {
+                    if let ExecutionResult::List(l) = x {
+                        !l.is_list()
+                    } else {
+                        true
+                    }
+                }) {
+                    return Err(
+                        "expected type in arguments is list?, but actually type is diffrent"
+                            .to_string(),
+                    );
+                }
+                if let ExecutionResult::List(l) = first {
+                    if !l.is_list() {
+                        return Err("expected type in first argument is list?, but actually type is diffrent".to_string());
+                    }
+                    let mut next = l.clone();
+                    for item in &vals[1..] {
+                        next = List::append(next, item.clone());
+                    }
+                    Ok(ExecutionResult::List(next))
+                } else {
+                    Err(
+                        "expected type in first argument is list?, but actually type is diffrent"
+                            .to_string(),
+                    )
+                }
+            }
         }
         ListOperationKind::SetCar => {
-            todo!()
+            if vals.len() != 2 {
+                Err(("number of arguments needs `2`").to_string())
+            } else {
+                let first = if let ExecutionResult::List(ls) = &vals[0] {
+                    if let List::Nil = ls {
+                        return Err(
+                            "expected type is pair?, but actually type is different".to_string()
+                        );
+                    }
+                    ls
+                } else {
+                    return Err(
+                        "expected type is pair?, but actually type is different".to_string()
+                    );
+                };
+                Ok(ExecutionResult::List(List::Cons(
+                    Box::new(vals[1].clone()),
+                    Box::new(first.cdr().clone()),
+                )))
+            }
         }
         ListOperationKind::SetCdr => {
-            todo!()
+            if vals.len() != 2 {
+                Err(("number of arguments needs `2`").to_string())
+            } else {
+                let first = if let ExecutionResult::List(ls) = &vals[0] {
+                    if let List::Nil = ls {
+                        return Err(
+                            "expected type is pair?, but actually type is different".to_string()
+                        );
+                    }
+                    ls
+                } else {
+                    return Err(
+                        "expected type is pair?, but actually type is different".to_string()
+                    );
+                };
+                Ok(ExecutionResult::List(List::Cons(
+                    Box::new(first.car().clone()),
+                    Box::new(vals[1].clone()),
+                )))
+            }
         }
     }
 }
