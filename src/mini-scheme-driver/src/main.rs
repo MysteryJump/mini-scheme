@@ -46,12 +46,17 @@ fn main() {
         (car (cdr (cdr cc)))
         (define lss '(2 2 3 3 (3 . 5)))
         (length lss)
+        (memq lss 3)
         (last '(3 . ()))
         (append '(3 9 (3 . 3)) '(3))
         (set-car! lss 5)
         lss
         (set-cdr! lss '(3))
         lss
+        (define x "aa")
+        (define y (string-append x "a"))
+        (eq? y "aaa")
+        
         "#,
         // TODO: Add some test
     )

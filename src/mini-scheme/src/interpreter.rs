@@ -4,6 +4,8 @@ use std::{
     fmt::Display,
 };
 
+use uuid::Uuid;
+
 use crate::ast::{Arg, Body, Const, Define, Expr, SExpr, TopLevel};
 
 type EResult<'a> = Result<ExecutionResult<'a>, String>;
@@ -20,6 +22,7 @@ macro_rules! add_embfunc {
 pub struct Env<'a> {
     defineds: RefCell<HashMap<u32, HashMap<&'a str, ExecutionResult<'a>>>>,
     current_depth: Cell<u32>,
+    str_consts_pairs: RefCell<HashMap<&'a str, u128>>,
 }
 
 impl<'a> Env<'a> {
@@ -31,6 +34,7 @@ impl<'a> Env<'a> {
                 RefCell::new(map)
             },
             current_depth: Cell::new(0),
+            str_consts_pairs: RefCell::new(HashMap::new()),
         }
     }
 
@@ -116,6 +120,16 @@ impl<'a> Env<'a> {
         add_embfunc!(map, "load");
         map
     }
+
+    pub fn get_const_str_addr(&self, name: &'a str) -> u128 {
+        if self.str_consts_pairs.borrow().contains_key(name) {
+            self.str_consts_pairs.borrow()[name]
+        } else {
+            let addr = Uuid::new_v4().as_u128();
+            self.str_consts_pairs.borrow_mut().insert(name, addr);
+            addr
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -138,16 +152,18 @@ impl<'a> Interpreter<'a> {
 
     fn execute_expr(&'a self, expr: Expr<'a>) -> EResult<'a> {
         match expr {
-            Expr::Const(c) => Ok(c.into()),
+            Expr::Const(c) => Ok(c.into_with_env(&self.env)),
             Expr::Id(id) => self
                 .env
                 .get_expr_by_def_name(id)
                 .ok_or_else(|| "Cannot find such name.".to_string()),
-            Expr::Lambda(arg, body) => Ok(ExecutionResult::Func(arg, body)),
+            Expr::Lambda(arg, body) => {
+                Ok(ExecutionResult::Func(arg, body, Uuid::new_v4().as_u128()))
+            }
             Expr::Apply(func, arg_apply) => {
                 let result_func = self.execute_expr(*func.clone())?;
                 match result_func {
-                    ExecutionResult::Func(arg_func, body) => match arg_func {
+                    ExecutionResult::Func(arg_func, body, _) => match arg_func {
                         Arg::Id(id) => {
                             if arg_apply.len() != 1 {
                                 Err("Args count is not match".to_string())
@@ -245,6 +261,10 @@ impl<'a> Interpreter<'a> {
                                 }
                                 Ok(ExecutionResult::Unit)
                             }
+                            "eq?" => execute_comp_operation(EqCompKind::Eq, &evaleds),
+                            "neq?" => execute_comp_operation(EqCompKind::Neq, &evaleds),
+                            "equal?" => execute_comp_operation(EqCompKind::Equal, &evaleds),
+                            "memq" => execute_list_operation(ListOperationKind::Memq, &evaleds),
                             _ => todo!(),
                         }
                     }
@@ -256,7 +276,7 @@ impl<'a> Interpreter<'a> {
                     if matches!(c, Const::Unit) {
                         ExecutionResult::List(List::Nil)
                     } else {
-                        c.into()
+                        c.into_with_env(&self.env)
                     }
                 }
                 SExpr::Id(sym) => ExecutionResult::Symbol(sym.to_string()),
@@ -287,7 +307,11 @@ impl<'a> Interpreter<'a> {
                 self.env.add_defines(calced_bindeds);
                 let result = if let Some(name) = name {
                     let arg_ls = binds.0.iter().map(|x| x.0).collect();
-                    let func = ExecutionResult::Func(Arg::IdList(arg_ls, None), body.clone());
+                    let func = ExecutionResult::Func(
+                        Arg::IdList(arg_ls, None),
+                        body.clone(),
+                        Uuid::new_v4().as_u128(),
+                    );
                     self.env.add_define(name, func);
 
                     self.execute_body(body)
@@ -432,7 +456,7 @@ impl<'a> Interpreter<'a> {
             }
             Define::DefineList((name, arg, arg_rest), body) => self.env.add_define(
                 name,
-                ExecutionResult::Func(Arg::IdList(arg, arg_rest), body),
+                ExecutionResult::Func(Arg::IdList(arg, arg_rest), body, Uuid::new_v4().as_u128()),
             ),
         }
         Ok(ExecutionResult::Unit)
@@ -455,20 +479,75 @@ impl<'a> Interpreter<'a> {
 #[derive(Debug, Clone)]
 pub enum ExecutionResult<'a> {
     Number(i64),
-    String(String),
+    String(String, u128),
     Bool(bool),
     Symbol(String),
-    Func(Arg<'a>, Body<'a>),
+    Func(Arg<'a>, Body<'a>, u128),
     List(List<'a>),
     Unit,
     EmbeddedFunc(&'static str),
     Undefined,
 }
 
-impl<'a> From<Const<'a>> for ExecutionResult<'a> {
-    fn from(c: Const<'a>) -> Self {
-        match c {
-            Const::Str(s) => ExecutionResult::String(s.to_string()),
+impl<'a> ExecutionResult<'a> {
+    /// do deep compare
+    fn equal(&self, other: &Self) -> bool {
+        match self {
+            ExecutionResult::Number(n) => matches!(other, ExecutionResult::Number(nn) if n == nn),
+            ExecutionResult::String(s, _) => {
+                matches!(other, ExecutionResult::String(ss,_) if s == ss)
+            }
+            ExecutionResult::Bool(b) => matches!(other, ExecutionResult::Bool(bb) if b == bb),
+            ExecutionResult::Symbol(s) => matches!(other, ExecutionResult::Symbol(ss) if s == ss),
+            ExecutionResult::Func(_, _, a) => {
+                matches!(other, ExecutionResult::Func(_,_,aa) if a == aa)
+            }
+            ExecutionResult::List(l) => matches!(other, ExecutionResult::List(ll) if l.equal(ll)),
+            ExecutionResult::Unit => matches!(other, ExecutionResult::Unit),
+            ExecutionResult::EmbeddedFunc(e) => {
+                matches!(other, ExecutionResult::EmbeddedFunc(ee) if e == ee)
+            }
+            ExecutionResult::Undefined => false,
+        }
+    }
+    /// do shallow compare
+    fn eq(&self, other: &Self) -> bool {
+        match self {
+            ExecutionResult::Number(nx) => {
+                matches!(other, ExecutionResult::Number(n) if nx == n)
+            }
+            ExecutionResult::String(_, addr) => {
+                matches!(other, ExecutionResult::String(_, addr2) if addr == addr2)
+            }
+            ExecutionResult::Bool(b) => {
+                matches!(other, ExecutionResult::Bool(b2) if b == b2)
+            }
+            ExecutionResult::Symbol(sym) => {
+                matches!(other, ExecutionResult::Symbol(sym2) if sym == sym2)
+            }
+            ExecutionResult::Func(_, _, faddr) => {
+                matches!(other, ExecutionResult::Func(_,_, saddr) if faddr == saddr)
+            }
+            ExecutionResult::List(fl) => match other {
+                ExecutionResult::List(List::Nil) => matches!(fl, List::Nil),
+                ExecutionResult::List(List::Cons(_, _, u)) => {
+                    matches!(fl, List::Cons(_, _, uuid) if u == uuid)
+                }
+                _ => false,
+            },
+            ExecutionResult::Unit => matches!(other, ExecutionResult::Unit),
+            ExecutionResult::EmbeddedFunc(name) => {
+                matches!(other, ExecutionResult::EmbeddedFunc(name2) if name == name2)
+            }
+            ExecutionResult::Undefined => false,
+        }
+    }
+}
+
+impl<'a> Const<'a> {
+    fn into_with_env(self, env: &'a Env<'a>) -> ExecutionResult<'a> {
+        match self {
+            Const::Str(s) => ExecutionResult::String(s.to_string(), env.get_const_str_addr(s)),
             Const::Bool(b) => ExecutionResult::Bool(b),
             Const::Num(n) => ExecutionResult::Number(n),
             Const::Unit => ExecutionResult::Unit,
@@ -480,11 +559,11 @@ impl<'a> Display for ExecutionResult<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ExecutionResult::Number(n) => write!(f, "{}", n),
-            ExecutionResult::String(s) => write!(f, "\"{}\"", s),
+            ExecutionResult::String(s, _) => write!(f, "\"{}\"", s),
             ExecutionResult::Bool(false) => write!(f, "#f"),
             ExecutionResult::Bool(true) => write!(f, "#t"),
             ExecutionResult::Symbol(s) => write!(f, "{}", s),
-            ExecutionResult::Func(_, _) => write!(f, "#<procedure>"),
+            ExecutionResult::Func(_, _, _) => write!(f, "#<procedure>"),
             ExecutionResult::Unit => write!(f, "()"),
             ExecutionResult::List(l) => write!(f, "{}", l),
             ExecutionResult::EmbeddedFunc(_) => write!(f, "#<procedure>"),
@@ -495,50 +574,58 @@ impl<'a> Display for ExecutionResult<'a> {
 
 #[derive(Debug, Clone)]
 pub enum List<'a> {
-    Cons(Box<ExecutionResult<'a>>, Box<ExecutionResult<'a>>),
+    Cons(Box<ExecutionResult<'a>>, Box<ExecutionResult<'a>>, u128),
     Nil,
 }
 
 impl<'a> List<'a> {
     pub fn new(result: ExecutionResult<'a>) -> Self {
-        Self::Cons(Box::new(result), Box::new(ExecutionResult::List(List::Nil)))
+        Self::Cons(
+            Box::new(result),
+            Box::new(ExecutionResult::List(List::Nil)),
+            Uuid::new_v4().as_u128(),
+        )
     }
 
     pub fn cons(left: ExecutionResult<'a>, right: ExecutionResult<'a>) -> Self {
-        Self::Cons(Box::new(left), Box::new(right))
+        Self::Cons(Box::new(left), Box::new(right), Uuid::new_v4().as_u128())
     }
 
     pub fn car(&self) -> ExecutionResult<'a> {
         match self {
-            List::Cons(car, _) => *car.clone(),
+            List::Cons(car, _, _) => *car.clone(),
             List::Nil => ExecutionResult::List(List::Nil),
+        }
+    }
+
+    fn car_ref(&self) -> &ExecutionResult<'a> {
+        match self {
+            List::Cons(car, _, _) => car,
+            List::Nil => &ExecutionResult::List(List::Nil),
         }
     }
 
     pub fn cdr(&self) -> ExecutionResult<'a> {
         match self {
-            List::Cons(_, cdr) => *cdr.clone(),
+            List::Cons(_, cdr, _) => *cdr.clone(),
             List::Nil => ExecutionResult::List(List::Nil),
+        }
+    }
+
+    fn cdr_ref(&self) -> &ExecutionResult<'a> {
+        match self {
+            List::Cons(_, cdr, _) => cdr,
+            List::Nil => &ExecutionResult::List(List::Nil),
         }
     }
 
     pub fn is_list(&self) -> bool {
         match self {
-            List::Cons(_, cdr) => match *cdr.clone() {
+            List::Cons(_, cdr, _) => match *cdr.clone() {
                 ExecutionResult::List(l) => l.is_list(),
                 _ => false,
             },
             List::Nil => true,
-        }
-    }
-
-    pub fn get_rest(&self) -> Option<ExecutionResult<'a>> {
-        match self {
-            List::Cons(_, cdr) => match *cdr.clone() {
-                ExecutionResult::List(l) => l.get_rest(),
-                _ => Some(*cdr.clone()),
-            },
-            List::Nil => None,
         }
     }
 
@@ -552,7 +639,7 @@ impl<'a> List<'a> {
 
     fn len_(ls: &List<'a>, depth: usize) -> usize {
         match ls {
-            List::Cons(_, cdr) => match *cdr.clone() {
+            List::Cons(_, cdr, _) => match *cdr.clone() {
                 ExecutionResult::List(l) => Self::len_(&l, depth + 1),
                 _ => panic!(),
             },
@@ -591,8 +678,33 @@ impl<'a> List<'a> {
         }
     }
 
-    pub fn memq(&self, _: ExecutionResult<'a>) -> List<'a> {
-        todo!()
+    pub fn equal(&self, other: &List<'a>) -> bool {
+        let other_car = other.car_ref();
+        let other_cdr = other.cdr_ref();
+        self.car().equal(other_car) && self.cdr().equal(other_cdr)
+    }
+
+    pub fn memq(target: List<'a>, result: &ExecutionResult<'a>) -> Result<List<'a>, ()> {
+        if target.is_list() {
+            Ok(Self::memq_(target, result))
+        } else {
+            Err(())
+        }
+    }
+
+    fn memq_(target: List<'a>, result: &ExecutionResult<'a>) -> List<'a> {
+        if target.car_ref().eq(result) {
+            target
+        } else {
+            Self::memq_(
+                if let ExecutionResult::List(l) = target.cdr() {
+                    l
+                } else {
+                    panic!()
+                },
+                result,
+            )
+        }
     }
 }
 
@@ -611,7 +723,11 @@ impl<'a> From<(Vec<ExecutionResult<'a>>, Option<ExecutionResult<'a>>)> for List<
         };
         let mut list = last;
         for item in ls.iter().rev() {
-            list = ExecutionResult::List(List::Cons(Box::new(item.clone()), Box::new(list)));
+            list = ExecutionResult::List(List::Cons(
+                Box::new(item.clone()),
+                Box::new(list),
+                Uuid::new_v4().as_u128(),
+            ));
         }
 
         if let ExecutionResult::List(ls) = list {
@@ -830,11 +946,11 @@ fn execute_type_check<'a>(expected: Types, actually: &[ExecutionResult<'a>]) -> 
     } else {
         let f = &actually[0];
         Ok(ExecutionResult::Bool(match expected {
-            Types::String => matches!(f, ExecutionResult::String(_)),
+            Types::String => matches!(f, ExecutionResult::String(_, _)),
             Types::Num => matches!(f, ExecutionResult::Number(_)),
             Types::Symbol => matches!(f, ExecutionResult::Symbol(_)),
             Types::Bool => matches!(f, ExecutionResult::Bool(_)),
-            Types::Proc => matches!(f, ExecutionResult::Func(_, _)),
+            Types::Proc => matches!(f, ExecutionResult::Func(_, _, _)),
             Types::List => {
                 if let ExecutionResult::List(l) = f {
                     l.is_list()
@@ -885,7 +1001,7 @@ fn execute_conversion<'a>(
         let f = &vals[0];
         match (from_ty, to_ty) {
             (ConvType::Str, ConvType::Num) => {
-                if let ExecutionResult::String(s) = f {
+                if let ExecutionResult::String(s, _) = f {
                     Ok(match s.parse::<i64>() {
                         Ok(s) => ExecutionResult::Number(s),
                         Err(_) => ExecutionResult::Bool(false),
@@ -896,20 +1012,26 @@ fn execute_conversion<'a>(
             }
             (ConvType::Num, ConvType::Str) => {
                 if let ExecutionResult::Number(s) = f {
-                    Ok(ExecutionResult::String(s.to_string()))
+                    Ok(ExecutionResult::String(
+                        s.to_string(),
+                        Uuid::new_v4().as_u128(),
+                    ))
                 } else {
                     Err("expected type is string?, but actually type is diffrent".to_string())
                 }
             }
             (ConvType::Sym, ConvType::Str) => {
                 if let ExecutionResult::Symbol(s) = f {
-                    Ok(ExecutionResult::String(s.to_string()))
+                    Ok(ExecutionResult::String(
+                        s.to_string(),
+                        Uuid::new_v4().as_u128(),
+                    ))
                 } else {
                     Err("expected type is symbol?, but actually type is diffrent".to_string())
                 }
             }
             (ConvType::Str, ConvType::Sym) => {
-                if let ExecutionResult::String(s) = f {
+                if let ExecutionResult::String(s, _) = f {
                     Ok(ExecutionResult::Symbol(s.to_string()))
                 } else {
                     Err("expected type is string?, but actually type is diffrent".to_string())
@@ -923,13 +1045,13 @@ fn execute_conversion<'a>(
 fn execute_string_append<'a>(vals: &[ExecutionResult<'a>]) -> EResult<'a> {
     let mut sp = String::new();
     for item in vals {
-        if let ExecutionResult::String(s) = item {
+        if let ExecutionResult::String(s, _) = item {
             sp.push_str(s);
         } else {
             return Err("string-append needs string?".to_string());
         }
     }
-    Ok(ExecutionResult::String(sp))
+    Ok(ExecutionResult::String(sp, Uuid::new_v4().as_u128()))
 }
 
 #[test]
@@ -988,7 +1110,12 @@ fn execute_list_operation<'a>(
             if vals.len() != 2 {
                 Err(("number of arguments needs `2`").to_string())
             } else {
-                Ok(List::Cons(Box::new(vals[0].clone()), Box::new(vals[0].clone())).into())
+                Ok(List::Cons(
+                    Box::new(vals[0].clone()),
+                    Box::new(vals[0].clone()),
+                    Uuid::new_v4().as_u128(),
+                )
+                .into())
             }
         }
         ListOperationKind::List => {
@@ -1010,7 +1137,21 @@ fn execute_list_operation<'a>(
             }
         }
         ListOperationKind::Memq => {
-            todo!()
+            if vals.len() != 2 {
+                Err(("number of arguments needs `2`").to_string())
+            } else {
+                let list = if let ExecutionResult::List(ls) = vals[0].clone() {
+                    ls
+                } else {
+                    return Err("expected type is list?, but actually type is diffrent".to_string());
+                };
+                match List::memq(list, &vals[1]) {
+                    Ok(o) => Ok(ExecutionResult::List(o)),
+                    Err(_) => {
+                        Err("expected type is list?, but actually type is diffrent".to_string())
+                    }
+                }
+            }
         }
         ListOperationKind::Last => {
             if vals.len() != 1 {
@@ -1065,13 +1206,14 @@ fn execute_list_operation<'a>(
             if vals.len() != 2 {
                 Err(("number of arguments needs `2`").to_string())
             } else {
-                let first = if let ExecutionResult::List(ls) = &vals[0] {
-                    if let List::Nil = ls {
+                let (first, uuid) = if let ExecutionResult::List(ls) = &vals[0] {
+                    if let List::Cons(_, _, uuid) = ls {
+                        (ls, uuid)
+                    } else {
                         return Err(
                             "expected type is pair?, but actually type is different".to_string()
                         );
                     }
-                    ls
                 } else {
                     return Err(
                         "expected type is pair?, but actually type is different".to_string()
@@ -1080,6 +1222,7 @@ fn execute_list_operation<'a>(
                 Ok(ExecutionResult::List(List::Cons(
                     Box::new(vals[1].clone()),
                     Box::new(first.cdr().clone()),
+                    *uuid,
                 )))
             }
         }
@@ -1087,13 +1230,14 @@ fn execute_list_operation<'a>(
             if vals.len() != 2 {
                 Err(("number of arguments needs `2`").to_string())
             } else {
-                let first = if let ExecutionResult::List(ls) = &vals[0] {
-                    if let List::Nil = ls {
+                let (first, uuid) = if let ExecutionResult::List(ls) = &vals[0] {
+                    if let List::Cons(_, _, uuid) = ls {
+                        (ls, uuid)
+                    } else {
                         return Err(
                             "expected type is pair?, but actually type is different".to_string()
                         );
                     }
-                    ls
                 } else {
                     return Err(
                         "expected type is pair?, but actually type is different".to_string()
@@ -1102,8 +1246,29 @@ fn execute_list_operation<'a>(
                 Ok(ExecutionResult::List(List::Cons(
                     Box::new(first.car().clone()),
                     Box::new(vals[1].clone()),
+                    *uuid,
                 )))
             }
+        }
+    }
+}
+
+enum EqCompKind {
+    Eq, // shallow compare
+    Neq,
+    Equal, // deep compare
+}
+
+fn execute_comp_operation<'a>(op_kind: EqCompKind, vals: &[ExecutionResult<'a>]) -> EResult<'a> {
+    if vals.len() != 2 {
+        Err(("number of arguments needs `2`").to_string())
+    } else {
+        let first = &vals[0];
+        let second = &vals[1];
+        match op_kind {
+            EqCompKind::Eq => Ok(ExecutionResult::Bool(first.eq(second))),
+            EqCompKind::Neq => Ok(ExecutionResult::Bool(!first.eq(second))),
+            EqCompKind::Equal => Ok(ExecutionResult::Bool(first.equal(second))),
         }
     }
 }
