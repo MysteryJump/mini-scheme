@@ -177,10 +177,50 @@ impl<'a> Interpreter<'a> {
                             }
                         }
                         Arg::IdList(ids, rest) => {
-                            if rest.is_some() {
-                                todo!()
-                            }
-                            if ids.len() != arg_apply.len() {
+                            if let Some(rest) = rest {
+                                if ids.len() > arg_apply.len() {
+                                    Err("Args count is fewer".to_string())
+                                } else {
+                                    let ids_len = ids.len();
+                                    let ids = if ids.len() < arg_apply.len() {
+                                        let mut ids = ids;
+                                        ids.append(
+                                            &mut std::iter::repeat(rest)
+                                                .take(arg_apply.len() - ids.len())
+                                                .collect(),
+                                        );
+                                        ids
+                                    } else {
+                                        ids
+                                    };
+                                    let executed_results =
+                                        ids.iter().zip(arg_apply).map(|(name, expr)| {
+                                            (name, self.execute_expr(expr.clone()))
+                                        });
+
+                                    let args = executed_results
+                                        .clone()
+                                        .take(ids.len())
+                                        .collect::<Vec<_>>();
+
+                                    let mut rests = Vec::new();
+                                    for (_, r) in executed_results.skip(ids_len) {
+                                        rests.push(r?);
+                                    }
+                                    let list = ExecutionResult::List((rests, None).into());
+
+                                    self.env.enter_block();
+                                    for (name, result) in args {
+                                        self.env.add_define(name, result?);
+                                    }
+
+                                    self.env.add_define(rest, list);
+
+                                    let result = self.execute_body(body);
+                                    self.env.exit_block();
+                                    result
+                                }
+                            } else if ids.len() != arg_apply.len() {
                                 Err("Args count is not match".to_string())
                             } else {
                                 self.env.enter_block();

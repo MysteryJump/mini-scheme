@@ -56,7 +56,8 @@ fn main() {
         (define x "aa")
         (define y (string-append x "a"))
         (eq? y "aaa")
-        
+        (define (Hack x y . z) z)
+        (Hack 1 2 3 4 5)
         "#,
         // TODO: Add some test
     )
