@@ -62,8 +62,10 @@ impl Repl {
                     for item in r {
                         match item {
                             Ok(ss) => {
-                                s.push_str(&ss.to_string());
-                                s.push('\n')
+                                if !matches!(ss, interpreter::ExecutionResult::Unit) {
+                                    s.push_str(&ss.to_string());
+                                    s.push('\n')
+                                }
                             }
                             Err(e) => {
                                 s.push_str(&e);

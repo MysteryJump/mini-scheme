@@ -1,4 +1,7 @@
 use std::env;
+use std::io::Write;
+
+use mini_scheme::Repl;
 
 #[rustfmt::skip]
 const HELP_TEXT: &str = 
@@ -38,7 +41,28 @@ fn main() {
 }
 
 fn repl() {
-    // mini_scheme::execute(source.to_string())
+    let mut repl = Repl::new();
+
+    loop {
+        let mut line = String::new();
+        print!("> ");
+        std::io::stdout().flush().unwrap();
+        loop {
+            std::io::stdin().read_line(&mut line).unwrap();
+            let paren_depth = line.chars().filter(|x| x == &'(').count()
+                - line.chars().filter(|x| x == &')').count();
+            if paren_depth == 0 {
+                break;
+            }
+        }
+        if line.trim_end() == "exit" {
+            break;
+        }
+        let result = repl.execute_line(&line);
+        if !result.is_empty() {
+            println!("{}", result);
+        }
+    }
 }
 
 fn do_debug() {
@@ -104,6 +128,8 @@ fn do_debug() {
           (display (Hack 1 2 3 4 5))
         "#,
         // TODO: Add some test
+        // TODO: parser error
+        // TODO: lexer negative number
     )
     .iter()
     .for_each(|x| match x {

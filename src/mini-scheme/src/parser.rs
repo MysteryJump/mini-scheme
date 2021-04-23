@@ -89,7 +89,7 @@ impl Parser {
                         TokenKind::Ident(x) if x == "load" => {
                             self.tokens.next();
                             self.tokens.next();
-                            let s = if let TokenKind::Ident(id) = self.tokens.next().unwrap().kind {
+                            let s = if let TokenKind::Str(id) = self.tokens.next().unwrap().kind {
                                 id
                             } else {
                                 panic!()

@@ -159,28 +159,33 @@ impl Interpreter {
         match toplevel {
             TopLevel::Expr(e) => Either::Left(self.execute_expr(e)),
             TopLevel::Define(def) => Either::Left(self.execute_define(def)),
-            TopLevel::Load(path) => Either::Right({
-                let src = match std::fs::read_to_string(path)
-                    .map_err(|_| "Cannot read file.".to_string())
-                {
-                    Ok(o) => o,
-                    Err(e) => return Either::Left(Err(e)),
-                };
-                let lexer = lexer::lex(&src);
-                let parser = crate::parser::Parser::new(lexer);
-                let mut results = Vec::new();
-                while let Some(pp) = parser.parse_toplevel() {
-                    match self.execute_toplevel(pp) {
-                        Either::Left(l) => {
-                            results.push(l);
-                        }
-                        Either::Right(mut r) => {
-                            results.append(&mut r);
+            TopLevel::Load(path) => {
+                #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                return Either::Left(Err("Unsupported function usage in this platform."));
+
+                Either::Right({
+                    let src = match std::fs::read_to_string(path)
+                        .map_err(|_| "Cannot read file.".to_string())
+                    {
+                        Ok(o) => o,
+                        Err(e) => return Either::Left(Err(e)),
+                    };
+                    let lexer = lexer::lex(&src);
+                    let parser = crate::parser::Parser::new(lexer);
+                    let mut results = Vec::new();
+                    while let Some(pp) = parser.parse_toplevel() {
+                        match self.execute_toplevel(pp) {
+                            Either::Left(l) => {
+                                results.push(l);
+                            }
+                            Either::Right(mut r) => {
+                                results.append(&mut r);
+                            }
                         }
                     }
-                }
-                results
-            }),
+                    results
+                })
+            }
         }
     }
 
