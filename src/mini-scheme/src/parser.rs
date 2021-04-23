@@ -12,34 +12,41 @@ use crate::{
 use super::ast::Cond;
 
 #[derive(Debug)]
-pub struct TokenStack<'a> {
+pub struct TokenStack {
     ind: Cell<i32>,
-    tokens: RefCell<Vec<&'a Token<'a>>>,
+    // tokens: RefCell<Vec<&'a Token<'a>>>,
+    tokens: RefCell<Vec<Token>>,
 }
 
-impl<'a> TokenStack<'a> {
-    pub fn new(tokens: &'a [Token<'a>]) -> Self {
+impl TokenStack {
+    pub fn new(tokens: Vec<Token>) -> Self {
         Self {
-            tokens: std::cell::RefCell::new(
+            // tokens: std::cell::RefCell::new(
+            //     tokens
+            //         .iter()
+            //         .filter(|x| x.kind != TokenKind::Other)
+            //         .collect::<Vec<_>>(),
+            // ),
+            ind: std::cell::Cell::new(-1),
+            tokens: RefCell::new(
                 tokens
-                    .iter()
+                    .into_iter()
                     .filter(|x| x.kind != TokenKind::Other)
                     .collect::<Vec<_>>(),
             ),
-            ind: std::cell::Cell::new(-1),
         }
     }
 
-    pub fn next(&self) -> Option<&'a Token<'a>> {
+    pub fn next(&self) -> Option<Token> {
         if self.has_next() {
             self.ind.borrow().set(self.ind.get() + 1);
-            Some(&(self.tokens.borrow_mut()[self.ind.get() as usize]))
+            Some((self.tokens.borrow_mut()[self.ind.get() as usize]).clone())
         } else {
             None
         }
     }
 
-    pub fn eat(&self, kind: TokenKind<'a>) -> bool {
+    pub fn eat(&self, kind: TokenKind) -> bool {
         if self.has_next() {
             self.ind.borrow().set(self.ind.get() + 1);
             let tk = &self.tokens.borrow_mut()[(self.ind.get()) as usize];
@@ -49,9 +56,9 @@ impl<'a> TokenStack<'a> {
         }
     }
 
-    pub fn lookahead(&self, n: i32) -> Option<&'a Token<'a>> {
+    pub fn lookahead(&self, n: i32) -> Option<Token> {
         if self.ind.get() + n < self.tokens.borrow().len() as i32 {
-            Some(&self.tokens.borrow()[(self.ind.get() + n) as usize])
+            Some(self.tokens.borrow()[(self.ind.get() + n) as usize].clone())
         } else {
             None
         }
@@ -63,12 +70,12 @@ impl<'a> TokenStack<'a> {
     }
 }
 
-pub struct Parser<'a> {
-    tokens: TokenStack<'a>,
+pub struct Parser {
+    tokens: TokenStack,
 }
 
-impl<'a> Parser<'a> {
-    pub fn new(tokens: &'a [Token<'a>]) -> Self {
+impl Parser {
+    pub fn new(tokens: Vec<Token>) -> Self {
         Self {
             tokens: TokenStack::new(tokens),
         }
@@ -79,7 +86,7 @@ impl<'a> Parser<'a> {
             Some(s) => match s.kind {
                 TokenKind::OpenParen => Some(match self.tokens.lookahead(2) {
                     Some(s) => match s.kind {
-                        TokenKind::Ident("load") => {
+                        TokenKind::Ident(x) if x == "load" => {
                             self.tokens.next();
                             self.tokens.next();
                             let s = if let TokenKind::Ident(id) = self.tokens.next().unwrap().kind {
@@ -90,7 +97,9 @@ impl<'a> Parser<'a> {
                             self.eat_close().unwrap();
                             TopLevel::Load(s)
                         }
-                        TokenKind::Ident("define") => TopLevel::Define(self.parse_define()),
+                        TokenKind::Ident(x) if x == "define" => {
+                            TopLevel::Define(self.parse_define())
+                        }
                         _ if self.is_next_first_of_expr() => TopLevel::Expr(self.parse_expr()),
                         _ => panic!(),
                     },
@@ -115,7 +124,7 @@ impl<'a> Parser<'a> {
     fn parse_expr(&self) -> Expr {
         match self.tokens.next().unwrap().kind {
             TokenKind::OpenParen => match self.tokens.lookahead(1).unwrap().kind {
-                TokenKind::Ident("lambda") => {
+                TokenKind::Ident(x) if x == "lambda" => {
                     self.tokens.next();
                     let arg = if let TokenKind::Ident(_) | TokenKind::OpenParen =
                         self.tokens.lookahead(1).unwrap().kind
@@ -132,7 +141,7 @@ impl<'a> Parser<'a> {
                     self.eat_close().unwrap();
                     Expr::Lambda(arg, body)
                 }
-                TokenKind::Ident("quote") => {
+                TokenKind::Ident(x) if x == "quote" => {
                     self.tokens.next();
                     let sexpr = if let TokenKind::Num(_)
                     | TokenKind::True
@@ -148,7 +157,7 @@ impl<'a> Parser<'a> {
                     self.eat_close().unwrap();
                     Expr::Quote(sexpr)
                 }
-                TokenKind::Ident("set!") => {
+                TokenKind::Ident(x) if x == "set!" => {
                     self.tokens.next();
                     let id = if let TokenKind::Ident(id) = self.tokens.next().unwrap().kind {
                         id
@@ -164,7 +173,7 @@ impl<'a> Parser<'a> {
                     self.eat_close().unwrap();
                     Expr::Set(id, Box::new(expr))
                 }
-                TokenKind::Ident("let") => {
+                TokenKind::Ident(x) if x == "let" => {
                     self.tokens.next();
                     let tp = match self.tokens.lookahead(1).unwrap().kind {
                         TokenKind::OpenParen => {
@@ -189,7 +198,7 @@ impl<'a> Parser<'a> {
                     self.eat_close().unwrap();
                     Expr::Let(tp.0, tp.1, body)
                 }
-                TokenKind::Ident(t @ ("let*" | "letrec")) => {
+                TokenKind::Ident(t) if t == "let*" || t == "letrec" => {
                     self.tokens.next();
                     let binds = if self.tokens.lookahead(1).unwrap().kind == TokenKind::OpenParen {
                         self.parse_bindings()
@@ -209,7 +218,7 @@ impl<'a> Parser<'a> {
                         Expr::LetRec(binds, body)
                     }
                 }
-                TokenKind::Ident("if") => {
+                TokenKind::Ident(t) if t == "if" => {
                     self.tokens.next();
 
                     let cond = if self.is_next_first_of_expr() {
@@ -235,20 +244,23 @@ impl<'a> Parser<'a> {
                     self.eat_close().unwrap();
                     Expr::If(Box::new(cond), Box::new(then), els)
                 }
-                TokenKind::Ident("cond") => {
+                TokenKind::Ident(x) if x == "cond" => {
                     self.tokens.next();
                     let mut els = None;
                     let mut conds = Vec::new();
                     while self.tokens.next().unwrap().kind == TokenKind::OpenParen {
-                        if let TokenKind::Ident("else") = self.tokens.lookahead(1).unwrap().kind {
-                            self.tokens.next();
-                            let mut exprs = Vec::new();
-                            while self.is_next_first_of_expr() {
-                                exprs.push(self.parse_expr());
+                        match self.tokens.lookahead(1).unwrap().kind {
+                            TokenKind::Ident(x) if x == "else" => {
+                                self.tokens.next();
+                                let mut exprs = Vec::new();
+                                while self.is_next_first_of_expr() {
+                                    exprs.push(self.parse_expr());
+                                }
+                                els = Some(exprs);
+                                self.eat_close().unwrap();
+                                break;
                             }
-                            els = Some(exprs);
-                            self.eat_close().unwrap();
-                            break;
+                            _ => {}
                         }
                         if self.is_next_first_of_expr() {
                             let cond = self.parse_expr();
@@ -264,7 +276,7 @@ impl<'a> Parser<'a> {
                     self.eat_close().unwrap();
                     Expr::Cond(Cond(conds, els))
                 }
-                TokenKind::Ident(t @ ("and" | "or" | "begin")) => {
+                TokenKind::Ident(t) if t == "and" || t == "or" || t == "begin" => {
                     self.tokens.next();
                     let mut exprs = Vec::new();
                     while self.is_next_first_of_expr() {
@@ -272,14 +284,14 @@ impl<'a> Parser<'a> {
                     }
 
                     self.eat_close().unwrap();
-                    match t {
+                    match &t as &str {
                         "and" => Expr::And(exprs),
                         "or" => Expr::Or(exprs),
                         "begin" => Expr::Begin(exprs),
                         _ => panic!(),
                     }
                 }
-                TokenKind::Ident("do") => {
+                TokenKind::Ident(d) if d == "do" => {
                     self.tokens.next();
 
                     self.tokens.eat(TokenKind::OpenParen).then_some(0).unwrap();
@@ -360,7 +372,7 @@ impl<'a> Parser<'a> {
     fn parse_define(&self) -> Define {
         self.tokens.eat(TokenKind::OpenParen).then_some(0).unwrap();
         self.tokens
-            .eat(TokenKind::Ident("define"))
+            .eat(TokenKind::Ident("define".to_string()))
             .then_some(0)
             .unwrap();
         match self.tokens.next().unwrap().kind {
@@ -385,7 +397,7 @@ impl<'a> Parser<'a> {
                     panic!()
                 }
                 let name = {
-                    let n = ids[0];
+                    let n = ids[0].clone();
                     ids = (&ids[1..]).to_vec();
                     n
                 };
@@ -499,7 +511,7 @@ impl<'a> Parser<'a> {
 
     // first: Num, Bool, String, (, Id
     fn parse_sexpr(&self) -> SExpr {
-        let next = self.tokens.next().unwrap().clone();
+        let next = self.tokens.next().unwrap();
 
         match next.kind {
             TokenKind::OpenParen => {

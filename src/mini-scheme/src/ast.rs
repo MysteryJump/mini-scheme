@@ -1,84 +1,81 @@
 use std::fmt::Display;
 
 #[derive(Debug, Clone)]
-pub enum TopLevel<'a> {
-    Expr(Expr<'a>),
-    Define(Define<'a>),
-    Load(&'a str),
+pub enum TopLevel {
+    Expr(Expr),
+    Define(Define),
+    Load(String),
 }
 
 #[derive(Debug, Clone)]
-pub enum Expr<'a> {
-    Const(Const<'a>),
-    Id(&'a str),
-    Lambda(Arg<'a>, Body<'a>),
-    Apply(Box<Expr<'a>>, Vec<Expr<'a>>),
-    Quote(SExpr<'a>),
-    Set(&'a str, Box<Expr<'a>>),
-    Let(Option<&'a str>, Bindings<'a>, Body<'a>),
-    LetStar(Bindings<'a>, Body<'a>),
-    LetRec(Bindings<'a>, Body<'a>),
-    If(Box<Expr<'a>>, Box<Expr<'a>>, Option<Box<Expr<'a>>>),
-    Cond(Cond<'a>),
-    And(Vec<Expr<'a>>),
-    Or(Vec<Expr<'a>>),
-    Begin(Vec<Expr<'a>>),
-    Do(Do<'a>),
+pub enum Expr {
+    Const(Const),
+    Id(String),
+    Lambda(Arg, Body),
+    Apply(Box<Expr>, Vec<Expr>),
+    Quote(SExpr),
+    Set(String, Box<Expr>),
+    Let(Option<String>, Bindings, Body),
+    LetStar(Bindings, Body),
+    LetRec(Bindings, Body),
+    If(Box<Expr>, Box<Expr>, Option<Box<Expr>>),
+    Cond(Cond),
+    And(Vec<Expr>),
+    Or(Vec<Expr>),
+    Begin(Vec<Expr>),
+    Do(Do),
 }
 
 #[derive(Debug, Clone)]
-pub struct Cond<'a>(
-    pub Vec<(Expr<'a>, Vec<Expr<'a>>)>,
-    pub Option<Vec<Expr<'a>>>,
+pub struct Cond(pub Vec<(Expr, Vec<Expr>)>, pub Option<Vec<Expr>>);
+
+#[derive(Debug, Clone)]
+pub struct Do(
+    pub Vec<(String, Expr, Expr)>,
+    pub Box<Expr>,
+    pub Vec<Expr>,
+    pub Body,
 );
 
 #[derive(Debug, Clone)]
-pub struct Do<'a>(
-    pub Vec<(&'a str, Expr<'a>, Expr<'a>)>,
-    pub Box<Expr<'a>>,
-    pub Vec<Expr<'a>>,
-    pub Body<'a>,
-);
-
-#[derive(Debug, Clone)]
-pub enum Define<'a> {
-    Define(&'a str, Expr<'a>),
-    DefineList((&'a str, Vec<&'a str>, Option<&'a str>), Body<'a>),
+pub enum Define {
+    Define(String, Expr),
+    DefineList((String, Vec<String>, Option<String>), Body),
 }
 
 #[derive(Debug, Clone)]
-pub enum Const<'a> {
-    Str(&'a str),
+pub enum Const {
+    Str(String),
     Bool(bool),
     Num(i64),
     Unit,
 }
 
-impl<'a> From<bool> for Const<'a> {
+impl From<bool> for Const {
     fn from(s: bool) -> Self {
         Self::Bool(s)
     }
 }
 
-impl<'a> From<i64> for Const<'a> {
+impl From<i64> for Const {
     fn from(s: i64) -> Self {
         Self::Num(s)
     }
 }
 
-impl<'a> From<&'a str> for Const<'a> {
-    fn from(s: &'a str) -> Self {
+impl From<String> for Const {
+    fn from(s: String) -> Self {
         Self::Str(s)
     }
 }
 
-impl<'a> From<()> for Const<'a> {
+impl From<()> for Const {
     fn from(_: ()) -> Self {
         Self::Unit
     }
 }
 
-impl<'a> Display for Const<'a> {
+impl Display for Const {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Const::Str(s) => write!(f, "{}", s),
@@ -91,20 +88,20 @@ impl<'a> Display for Const<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub struct Body<'a>(pub Vec<Define<'a>>, pub Vec<Expr<'a>>);
+pub struct Body(pub Vec<Define>, pub Vec<Expr>);
 
 #[derive(Debug, Clone)]
-pub struct Bindings<'a>(pub Vec<(&'a str, Expr<'a>)>);
+pub struct Bindings(pub Vec<(String, Expr)>);
 
 #[derive(Debug, Clone)]
-pub enum SExpr<'a> {
-    Const(Const<'a>),
-    Id(&'a str),
-    SExprs(Vec<SExpr<'a>>, Option<Box<SExpr<'a>>>),
+pub enum SExpr {
+    Const(Const),
+    Id(String),
+    SExprs(Vec<SExpr>, Option<Box<SExpr>>),
 }
 
 #[derive(Debug, Clone)]
-pub enum Arg<'a> {
-    Id(&'a str),
-    IdList(Vec<&'a str>, Option<&'a str>),
+pub enum Arg {
+    Id(String),
+    IdList(Vec<String>, Option<String>),
 }

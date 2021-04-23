@@ -1,18 +1,18 @@
 use std::str::Chars;
 
 #[derive(Debug, Clone)]
-pub struct Token<'a> {
-    pub kind: TokenKind<'a>,
+pub struct Token {
+    pub kind: TokenKind,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TokenKind<'a> {
+#[derive(Debug, Clone, PartialEq)]
+pub enum TokenKind {
     OpenParen,
     CloseParen,
     Dot,
-    Str(&'a str),   // e.g. "Hello, world!"
-    Ident(&'a str), // e.g. define
+    Str(String),   // e.g. "Hello, world!"
+    Ident(String), // e.g. define
     Quote,
     True,
     False,
@@ -118,7 +118,7 @@ fn next_token(src: &str, before_span: Span) -> Option<Token> {
     })
 }
 
-fn boolean<'a>(chars: &mut Chars, bf: Span) -> Token<'a> {
+fn boolean(chars: &mut Chars, bf: Span) -> Token {
     match chars.next() {
         Some('t') => Token {
             kind: TokenKind::True,
@@ -157,7 +157,7 @@ fn boolean<'a>(chars: &mut Chars, bf: Span) -> Token<'a> {
     }
 }
 
-fn string<'a>(chars: &mut Chars, src: &'a str, bf: Span) -> Token<'a> {
+fn string<'a>(chars: &mut Chars, src: &'a str, bf: Span) -> Token {
     let mut ignore_next = false;
     let mut last_ind = 0;
     for (ind, ch) in chars.enumerate() {
@@ -181,7 +181,7 @@ fn string<'a>(chars: &mut Chars, src: &'a str, bf: Span) -> Token<'a> {
     }
     let len = (last_ind + 2) as i32;
     Token {
-        kind: TokenKind::Str(&src[1..=last_ind]),
+        kind: TokenKind::Str(src[1..=last_ind].to_string()),
         span: Span {
             col: bf.col + 1,
             ln: bf.ln,
@@ -191,7 +191,7 @@ fn string<'a>(chars: &mut Chars, src: &'a str, bf: Span) -> Token<'a> {
     }
 }
 
-fn ident_or_num<'a>(chars: &mut Chars, src: &'a str, bf: Span) -> Token<'a> {
+fn ident_or_num<'a>(chars: &mut Chars, src: &'a str, bf: Span) -> Token {
     let mut ch = read_to_termination(chars);
     let f = src.chars().next().unwrap();
     if f == '.' && ch.is_empty() {
@@ -217,7 +217,7 @@ fn ident_or_num<'a>(chars: &mut Chars, src: &'a str, bf: Span) -> Token<'a> {
     } else {
         let len = ch.len() as i32 + 1;
         Token {
-            kind: TokenKind::Ident(&src[0..ch.len() + 1]),
+            kind: TokenKind::Ident(src[0..ch.len() + 1].to_string()),
             span: Span {
                 len,
                 col: bf.col + len,

@@ -4,28 +4,32 @@ use std::{
     fmt::Display,
 };
 
+use either::Either;
 use uuid::Uuid;
 
-use crate::ast::{Arg, Body, Const, Define, Expr, SExpr, TopLevel};
+use crate::{
+    ast::{Arg, Body, Const, Define, Expr, SExpr, TopLevel},
+    lexer,
+};
 
-type EResult<'a> = Result<ExecutionResult<'a>, String>;
+type EResult = Result<ExecutionResult, String>;
 
 macro_rules! add_embfunc {
     ($map:ident,$($name:expr),*) => {
         $(
-            $map.insert($name, ExecutionResult::EmbeddedFunc($name));
+            $map.insert($name.to_string(), ExecutionResult::EmbeddedFunc($name.to_string()));
         )*
     };
 }
 
-#[derive(Debug, Default)]
-pub struct Env<'a> {
-    defineds: RefCell<HashMap<u32, HashMap<&'a str, ExecutionResult<'a>>>>,
+#[derive(Debug, Default, Clone)]
+pub struct Env {
+    defineds: RefCell<HashMap<u32, HashMap<String, ExecutionResult>>>,
     current_depth: Cell<u32>,
-    str_consts_pairs: RefCell<HashMap<&'a str, u128>>,
+    str_consts_pairs: RefCell<HashMap<String, u128>>,
 }
 
-impl<'a> Env<'a> {
+impl Env {
     pub fn new() -> Self {
         Self {
             defineds: {
@@ -38,7 +42,7 @@ impl<'a> Env<'a> {
         }
     }
 
-    pub fn add_define(&self, name: &'a str, result: ExecutionResult<'a>) {
+    pub fn add_define(&self, name: String, result: ExecutionResult) {
         self.defineds
             .borrow_mut()
             .get_mut(&self.current_depth.get())
@@ -46,7 +50,7 @@ impl<'a> Env<'a> {
             .insert(name, result);
     }
 
-    pub fn add_defines(&self, pairs: Vec<(&'a str, ExecutionResult<'a>)>) {
+    pub fn add_defines(&self, pairs: Vec<(String, ExecutionResult)>) {
         self.defineds
             .borrow_mut()
             .get_mut(&self.current_depth.get())
@@ -54,10 +58,10 @@ impl<'a> Env<'a> {
             .extend(pairs);
     }
 
-    pub fn get_expr_by_def_name(&self, name: &'a str) -> Option<ExecutionResult<'a>> {
+    pub fn get_expr_by_def_name(&self, name: String) -> Option<ExecutionResult> {
         let cdepth = self.current_depth.get();
         for i in 0..=cdepth {
-            if self.defineds.borrow()[&(cdepth - i)].contains_key(name) {
+            if self.defineds.borrow()[&(cdepth - i)].contains_key(&name) {
                 return Some(self.defineds.borrow_mut()[&(cdepth - i)][&name].clone());
             }
         }
@@ -78,12 +82,12 @@ impl<'a> Env<'a> {
 
     pub fn update_entry(
         &self,
-        name: &'a str,
-        result: ExecutionResult<'a>,
-    ) -> Result<ExecutionResult<'a>, ()> {
+        name: String,
+        result: ExecutionResult,
+    ) -> Result<ExecutionResult, ()> {
         let cdepth = self.current_depth.get();
         for i in 0..=cdepth {
-            if self.defineds.borrow()[&(cdepth - i)].contains_key(name) {
+            if self.defineds.borrow()[&(cdepth - i)].contains_key(&name) {
                 let s = self
                     .defineds
                     .borrow_mut()
@@ -96,7 +100,7 @@ impl<'a> Env<'a> {
         Err(())
     }
 
-    fn get_embedded_func_names() -> HashMap<&'static str, ExecutionResult<'a>> {
+    fn get_embedded_func_names() -> HashMap<String, ExecutionResult> {
         let mut map = HashMap::new();
         add_embfunc!(map, "number?", "+", "-", "*", "/", "=", "<", "<=", ">", ">=");
         add_embfunc!(
@@ -118,12 +122,13 @@ impl<'a> Env<'a> {
         add_embfunc!(map, "neq?");
         add_embfunc!(map, "equal?");
         add_embfunc!(map, "load");
+        add_embfunc!(map, "display");
         map
     }
 
-    pub fn get_const_str_addr(&self, name: &'a str) -> u128 {
-        if self.str_consts_pairs.borrow().contains_key(name) {
-            self.str_consts_pairs.borrow()[name]
+    pub fn get_const_str_addr(&self, name: String) -> u128 {
+        if self.str_consts_pairs.borrow().contains_key(&name) {
+            self.str_consts_pairs.borrow()[&name]
         } else {
             let addr = Uuid::new_v4().as_u128();
             self.str_consts_pairs.borrow_mut().insert(name, addr);
@@ -133,24 +138,53 @@ impl<'a> Env<'a> {
 }
 
 #[derive(Debug)]
-pub struct Interpreter<'a> {
-    env: Env<'a>,
+pub struct Interpreter {
+    env: Env,
 }
 
-impl<'a> Interpreter<'a> {
+impl Interpreter {
     pub fn new() -> Self {
         Self { env: Env::new() }
     }
 
-    pub fn execute_toplevel(&'a self, toplevel: TopLevel<'a>) -> EResult<'a> {
+    pub fn with_env(env: Env) -> Self {
+        Self { env }
+    }
+
+    pub fn get_env(self) -> Env {
+        self.env
+    }
+
+    pub fn execute_toplevel(&self, toplevel: TopLevel) -> Either<EResult, Vec<EResult>> {
         match toplevel {
-            TopLevel::Expr(e) => self.execute_expr(e),
-            TopLevel::Define(def) => self.execute_define(def),
-            TopLevel::Load(_) => todo!(),
+            TopLevel::Expr(e) => Either::Left(self.execute_expr(e)),
+            TopLevel::Define(def) => Either::Left(self.execute_define(def)),
+            TopLevel::Load(path) => Either::Right({
+                let src = match std::fs::read_to_string(path)
+                    .map_err(|_| "Cannot read file.".to_string())
+                {
+                    Ok(o) => o,
+                    Err(e) => return Either::Left(Err(e)),
+                };
+                let lexer = lexer::lex(&src);
+                let parser = crate::parser::Parser::new(lexer);
+                let mut results = Vec::new();
+                while let Some(pp) = parser.parse_toplevel() {
+                    match self.execute_toplevel(pp) {
+                        Either::Left(l) => {
+                            results.push(l);
+                        }
+                        Either::Right(mut r) => {
+                            results.append(&mut r);
+                        }
+                    }
+                }
+                results
+            }),
         }
     }
 
-    fn execute_expr(&'a self, expr: Expr<'a>) -> EResult<'a> {
+    fn execute_expr(&self, expr: Expr) -> EResult {
         match expr {
             Expr::Const(c) => Ok(c.into_with_env(&self.env)),
             Expr::Id(id) => self
@@ -161,7 +195,7 @@ impl<'a> Interpreter<'a> {
                 Ok(ExecutionResult::Func(arg, body, Uuid::new_v4().as_u128()))
             }
             Expr::Apply(func, arg_apply) => {
-                let result_func = self.execute_expr(*func.clone())?;
+                let result_func = self.execute_expr(*func)?;
                 match result_func {
                     ExecutionResult::Func(arg_func, body, _) => match arg_func {
                         Arg::Id(id) => {
@@ -185,7 +219,7 @@ impl<'a> Interpreter<'a> {
                                     let ids = if ids.len() < arg_apply.len() {
                                         let mut ids = ids;
                                         ids.append(
-                                            &mut std::iter::repeat(rest)
+                                            &mut std::iter::repeat(rest.clone())
                                                 .take(arg_apply.len() - ids.len())
                                                 .collect(),
                                         );
@@ -193,10 +227,10 @@ impl<'a> Interpreter<'a> {
                                     } else {
                                         ids
                                     };
-                                    let executed_results =
-                                        ids.iter().zip(arg_apply).map(|(name, expr)| {
-                                            (name, self.execute_expr(expr.clone()))
-                                        });
+                                    let executed_results = ids
+                                        .iter()
+                                        .zip(arg_apply)
+                                        .map(|(name, expr)| (name, self.execute_expr(expr)));
 
                                     let args = executed_results
                                         .clone()
@@ -211,7 +245,7 @@ impl<'a> Interpreter<'a> {
 
                                     self.env.enter_block();
                                     for (name, result) in args {
-                                        self.env.add_define(name, result?);
+                                        self.env.add_define(name.to_string(), result?);
                                     }
 
                                     self.env.add_define(rest, list);
@@ -227,9 +261,9 @@ impl<'a> Interpreter<'a> {
                                 for (key, result) in ids
                                     .iter()
                                     .zip(arg_apply)
-                                    .map(|(name, expr)| (name, self.execute_expr(expr.clone())))
+                                    .map(|(name, expr)| (name, self.execute_expr(expr)))
                                 {
-                                    self.env.add_define(key, result?);
+                                    self.env.add_define(key.to_string(), result?);
                                 }
                                 let result = self.execute_body(body);
                                 self.env.exit_block();
@@ -242,7 +276,7 @@ impl<'a> Interpreter<'a> {
                             .iter()
                             .map(|x| self.execute_expr(x.clone()))
                             .collect::<Result<Vec<_>, _>>()?;
-                        match name {
+                        match &name as &str {
                             "+" => execute_number_binary_operation(NumOpKind::Add, &evaleds),
                             "-" => execute_number_binary_operation(NumOpKind::Sub, &evaleds),
                             "/" => execute_number_binary_operation(NumOpKind::Div, &evaleds),
@@ -284,7 +318,7 @@ impl<'a> Interpreter<'a> {
                             "set-car!" => {
                                 let result =
                                     execute_list_operation(ListOperationKind::SetCar, &evaleds)?;
-                                if let Expr::Id(id) = arg_apply[0] {
+                                if let Expr::Id(id) = arg_apply[0].clone() {
                                     self.env
                                         .update_entry(id, result)
                                         .map_err(|_| "Cannot find such name.".to_string())?;
@@ -294,7 +328,7 @@ impl<'a> Interpreter<'a> {
                             "set-cdr!" => {
                                 let result =
                                     execute_list_operation(ListOperationKind::SetCdr, &evaleds)?;
-                                if let Expr::Id(id) = arg_apply[0] {
+                                if let Expr::Id(id) = arg_apply[0].clone() {
                                     self.env
                                         .update_entry(id, result)
                                         .map_err(|_| "Cannot find such name.".to_string())?;
@@ -305,6 +339,14 @@ impl<'a> Interpreter<'a> {
                             "neq?" => execute_comp_operation(EqCompKind::Neq, &evaleds),
                             "equal?" => execute_comp_operation(EqCompKind::Equal, &evaleds),
                             "memq" => execute_list_operation(ListOperationKind::Memq, &evaleds),
+                            "display" => {
+                                if evaleds.len() != 1 {
+                                    Err(("a number of argument needs 1").to_string())
+                                } else {
+                                    println!("{}", evaleds[0]);
+                                    Ok(ExecutionResult::Unit)
+                                }
+                            }
                             _ => todo!(),
                         }
                     }
@@ -319,14 +361,14 @@ impl<'a> Interpreter<'a> {
                         c.into_with_env(&self.env)
                     }
                 }
-                SExpr::Id(sym) => ExecutionResult::Symbol(sym.to_string()),
+                SExpr::Id(sym) => ExecutionResult::Symbol(sym),
                 SExpr::SExprs(m, rest) => {
                     let results = m
                         .iter()
                         .map(|x| self.execute_expr(Expr::Quote(x.clone())))
                         .collect::<Result<Vec<_>, _>>()?;
                     let rest = if let Some(rest) = rest {
-                        Some(self.execute_expr(Expr::Quote(*rest.clone()))?)
+                        Some(self.execute_expr(Expr::Quote(*rest))?)
                     } else {
                         None
                     };
@@ -335,18 +377,18 @@ impl<'a> Interpreter<'a> {
             }),
             Expr::Set(name, expr) => self
                 .env
-                .update_entry(name, self.execute_expr(*expr.clone())?)
+                .update_entry(name, self.execute_expr(*expr)?)
                 .map_err(|_| "set expr to undefined name".to_string())
                 .map(|_| ExecutionResult::Unit),
             Expr::Let(name, binds, body) => {
                 let mut calced_bindeds = Vec::new();
                 for (name, expr) in &binds.0 {
-                    calced_bindeds.push((*name, self.execute_expr(expr.clone())?));
+                    calced_bindeds.push((name.clone(), self.execute_expr(expr.clone())?));
                 }
                 self.env.enter_block();
                 self.env.add_defines(calced_bindeds);
                 let result = if let Some(name) = name {
-                    let arg_ls = binds.0.iter().map(|x| x.0).collect();
+                    let arg_ls = binds.0.iter().map(|x| x.0.clone()).collect();
                     let func = ExecutionResult::Func(
                         Arg::IdList(arg_ls, None),
                         body.clone(),
@@ -364,7 +406,8 @@ impl<'a> Interpreter<'a> {
             Expr::LetStar(binds, body) => {
                 let envs_depth = binds.0.len();
                 for (name, expr) in &binds.0 {
-                    self.env.add_define(name, self.execute_expr(expr.clone())?);
+                    self.env
+                        .add_define(name.to_string(), self.execute_expr(expr.clone())?);
                     self.env.enter_block();
                 }
                 let result = self.execute_body(body);
@@ -374,20 +417,20 @@ impl<'a> Interpreter<'a> {
                 result
             }
             Expr::LetRec(binds, body) => {
-                let names = binds.0.iter().map(|x| x.0).collect::<Vec<_>>();
+                let names = binds.0.iter().map(|x| x.0.clone()).collect::<Vec<_>>();
                 if names.len() != names.iter().collect::<HashSet<_>>().len() {
                     Err("Cannot use same variable in bindings of letrec".to_string())
                 } else {
                     self.env.enter_block();
                     let undefineds = names
                         .iter()
-                        .map(|x| (*x, ExecutionResult::Undefined))
+                        .map(|x| (x.clone(), ExecutionResult::Undefined))
                         .collect();
                     self.env.add_defines(undefineds);
 
                     let mut calced_bindeds = Vec::new();
                     for (name, expr) in &binds.0 {
-                        calced_bindeds.push((*name, self.execute_expr(expr.clone())?));
+                        calced_bindeds.push((name.clone(), self.execute_expr(expr.clone())?));
                     }
                     for (name, result) in calced_bindeds {
                         self.env.update_entry(name, result).unwrap();
@@ -398,12 +441,12 @@ impl<'a> Interpreter<'a> {
                 }
             }
             Expr::If(cond, then, els) => {
-                let cond = self.execute_expr(*cond.clone())?;
+                let cond = self.execute_expr(*cond)?;
                 if !matches!(cond, ExecutionResult::Bool(false)) {
-                    self.execute_expr(*then.clone())
+                    self.execute_expr(*then)
                 } else {
                     match els {
-                        Some(els) => self.execute_expr(*els.clone()),
+                        Some(els) => self.execute_expr(*els),
                         None => Ok(ExecutionResult::Unit),
                     }
                 }
@@ -463,7 +506,8 @@ impl<'a> Interpreter<'a> {
                 self.env.enter_block();
                 let mut map = HashMap::new();
                 for (name, init, step) in &d.0 {
-                    self.env.add_define(name, self.execute_expr(init.clone())?);
+                    self.env
+                        .add_define(name.to_string(), self.execute_expr(init.clone())?);
                     map.insert(name, step);
                 }
                 let r = self.execute_expr(*d.1.clone())?;
@@ -489,7 +533,7 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn execute_define(&'a self, define: Define<'a>) -> EResult<'a> {
+    fn execute_define(&self, define: Define) -> EResult {
         match define {
             Define::Define(name, expr) => {
                 self.env.add_define(name, self.execute_expr(expr)?);
@@ -502,7 +546,7 @@ impl<'a> Interpreter<'a> {
         Ok(ExecutionResult::Unit)
     }
 
-    fn execute_body(&'a self, body: Body<'a>) -> EResult<'a> {
+    fn execute_body(&self, body: Body) -> EResult {
         body.0
             .iter()
             .map(|x| self.execute_define(x.clone()))
@@ -517,19 +561,19 @@ impl<'a> Interpreter<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub enum ExecutionResult<'a> {
+pub enum ExecutionResult {
     Number(i64),
     String(String, u128),
     Bool(bool),
     Symbol(String),
-    Func(Arg<'a>, Body<'a>, u128),
-    List(List<'a>),
+    Func(Arg, Body, u128),
+    List(List),
     Unit,
-    EmbeddedFunc(&'static str),
+    EmbeddedFunc(String),
     Undefined,
 }
 
-impl<'a> ExecutionResult<'a> {
+impl ExecutionResult {
     /// do deep compare
     fn equal(&self, other: &Self) -> bool {
         match self {
@@ -584,8 +628,8 @@ impl<'a> ExecutionResult<'a> {
     }
 }
 
-impl<'a> Const<'a> {
-    fn into_with_env(self, env: &'a Env<'a>) -> ExecutionResult<'a> {
+impl Const {
+    fn into_with_env(self, env: &Env) -> ExecutionResult {
         match self {
             Const::Str(s) => ExecutionResult::String(s.to_string(), env.get_const_str_addr(s)),
             Const::Bool(b) => ExecutionResult::Bool(b),
@@ -595,7 +639,7 @@ impl<'a> Const<'a> {
     }
 }
 
-impl<'a> Display for ExecutionResult<'a> {
+impl Display for ExecutionResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ExecutionResult::Number(n) => write!(f, "{}", n),
@@ -604,7 +648,7 @@ impl<'a> Display for ExecutionResult<'a> {
             ExecutionResult::Bool(true) => write!(f, "#t"),
             ExecutionResult::Symbol(s) => write!(f, "{}", s),
             ExecutionResult::Func(_, _, _) => write!(f, "#<procedure>"),
-            ExecutionResult::Unit => write!(f, "()"),
+            ExecutionResult::Unit => write!(f, ""),
             ExecutionResult::List(l) => write!(f, "{}", l),
             ExecutionResult::EmbeddedFunc(_) => write!(f, "#<procedure>"),
             ExecutionResult::Undefined => write!(f, "undefined"),
@@ -613,13 +657,13 @@ impl<'a> Display for ExecutionResult<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub enum List<'a> {
-    Cons(Box<ExecutionResult<'a>>, Box<ExecutionResult<'a>>, u128),
+pub enum List {
+    Cons(Box<ExecutionResult>, Box<ExecutionResult>, u128),
     Nil,
 }
 
-impl<'a> List<'a> {
-    pub fn new(result: ExecutionResult<'a>) -> Self {
+impl List {
+    pub fn new(result: ExecutionResult) -> Self {
         Self::Cons(
             Box::new(result),
             Box::new(ExecutionResult::List(List::Nil)),
@@ -627,32 +671,32 @@ impl<'a> List<'a> {
         )
     }
 
-    pub fn cons(left: ExecutionResult<'a>, right: ExecutionResult<'a>) -> Self {
+    pub fn cons(left: ExecutionResult, right: ExecutionResult) -> Self {
         Self::Cons(Box::new(left), Box::new(right), Uuid::new_v4().as_u128())
     }
 
-    pub fn car(&self) -> ExecutionResult<'a> {
+    pub fn car(&self) -> ExecutionResult {
         match self {
             List::Cons(car, _, _) => *car.clone(),
             List::Nil => ExecutionResult::List(List::Nil),
         }
     }
 
-    fn car_ref(&self) -> &ExecutionResult<'a> {
+    fn car_ref(&self) -> &ExecutionResult {
         match self {
             List::Cons(car, _, _) => car,
             List::Nil => &ExecutionResult::List(List::Nil),
         }
     }
 
-    pub fn cdr(&self) -> ExecutionResult<'a> {
+    pub fn cdr(&self) -> ExecutionResult {
         match self {
             List::Cons(_, cdr, _) => *cdr.clone(),
             List::Nil => ExecutionResult::List(List::Nil),
         }
     }
 
-    fn cdr_ref(&self) -> &ExecutionResult<'a> {
+    fn cdr_ref(&self) -> &ExecutionResult {
         match self {
             List::Cons(_, cdr, _) => cdr,
             List::Nil => &ExecutionResult::List(List::Nil),
@@ -677,7 +721,7 @@ impl<'a> List<'a> {
         }
     }
 
-    fn len_(ls: &List<'a>, depth: usize) -> usize {
+    fn len_(ls: &List, depth: usize) -> usize {
         match ls {
             List::Cons(_, cdr, _) => match *cdr.clone() {
                 ExecutionResult::List(l) => Self::len_(&l, depth + 1),
@@ -687,7 +731,7 @@ impl<'a> List<'a> {
         }
     }
 
-    pub fn last(&self) -> Result<ExecutionResult<'a>, &'static str> {
+    pub fn last(&self) -> Result<ExecutionResult, &'static str> {
         if matches!(self, List::Nil) {
             Err("null?")
         } else {
@@ -706,7 +750,7 @@ impl<'a> List<'a> {
         }
     }
 
-    pub fn append(first: List<'a>, other: ExecutionResult<'a>) -> List<'a> {
+    pub fn append(first: List, other: ExecutionResult) -> List {
         let (mut firsts, _) = first.into();
         if let ExecutionResult::List(other) = other {
             let (mut others, other_rest) = other.into();
@@ -718,13 +762,13 @@ impl<'a> List<'a> {
         }
     }
 
-    pub fn equal(&self, other: &List<'a>) -> bool {
+    pub fn equal(&self, other: &List) -> bool {
         let other_car = other.car_ref();
         let other_cdr = other.cdr_ref();
         self.car().equal(other_car) && self.cdr().equal(other_cdr)
     }
 
-    pub fn memq(target: List<'a>, result: &ExecutionResult<'a>) -> Result<List<'a>, ()> {
+    pub fn memq(target: List, result: &ExecutionResult) -> Result<List, ()> {
         if target.is_list() {
             Ok(Self::memq_(target, result))
         } else {
@@ -732,7 +776,7 @@ impl<'a> List<'a> {
         }
     }
 
-    fn memq_(target: List<'a>, result: &ExecutionResult<'a>) -> List<'a> {
+    fn memq_(target: List, result: &ExecutionResult) -> List {
         if target.car_ref().eq(result) {
             target
         } else {
@@ -748,14 +792,14 @@ impl<'a> List<'a> {
     }
 }
 
-impl<'a> From<List<'a>> for ExecutionResult<'a> {
-    fn from(f: List<'a>) -> Self {
+impl From<List> for ExecutionResult {
+    fn from(f: List) -> Self {
         Self::List(f)
     }
 }
 
-impl<'a> From<(Vec<ExecutionResult<'a>>, Option<ExecutionResult<'a>>)> for List<'a> {
-    fn from((ls, rest): (Vec<ExecutionResult<'a>>, Option<ExecutionResult<'a>>)) -> Self {
+impl From<(Vec<ExecutionResult>, Option<ExecutionResult>)> for List {
+    fn from((ls, rest): (Vec<ExecutionResult>, Option<ExecutionResult>)) -> Self {
         let last = if let Some(rest) = rest {
             rest
         } else {
@@ -778,8 +822,8 @@ impl<'a> From<(Vec<ExecutionResult<'a>>, Option<ExecutionResult<'a>>)> for List<
     }
 }
 
-impl<'a> From<List<'a>> for (Vec<ExecutionResult<'a>>, Option<ExecutionResult<'a>>) {
-    fn from(f: List<'a>) -> Self {
+impl From<List> for (Vec<ExecutionResult>, Option<ExecutionResult>) {
+    fn from(f: List) -> Self {
         let mut list = Vec::new();
         let mut cdr = f;
         loop {
@@ -799,7 +843,7 @@ impl<'a> From<List<'a>> for (Vec<ExecutionResult<'a>>, Option<ExecutionResult<'a
     }
 }
 
-impl<'a> Display for List<'a> {
+impl Display for List {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let List::Nil = self {
             write!(f, "()")
@@ -869,10 +913,7 @@ impl Display for NumOpKind {
     }
 }
 
-fn execute_number_binary_operation<'a>(
-    op_kind: NumOpKind,
-    results: &[ExecutionResult<'a>],
-) -> EResult<'a> {
+fn execute_number_binary_operation(op_kind: NumOpKind, results: &[ExecutionResult]) -> EResult {
     if results
         .iter()
         .any(|x| !matches!(x, ExecutionResult::Number(_)))
@@ -936,10 +977,10 @@ impl Display for NumCompOpKind {
     }
 }
 
-fn execute_number_binary_comparison<'a>(
+fn execute_number_binary_comparison(
     op_kind: NumCompOpKind,
-    results: &[ExecutionResult<'a>],
-) -> EResult<'a> {
+    results: &[ExecutionResult],
+) -> EResult {
     if results.is_empty() {
         Err("number of arguments needs 1 at least".to_string())
     } else if results
@@ -980,7 +1021,7 @@ enum Types {
     Null,
 }
 
-fn execute_type_check<'a>(expected: Types, actually: &[ExecutionResult<'a>]) -> EResult<'a> {
+fn execute_type_check(expected: Types, actually: &[ExecutionResult]) -> EResult {
     if actually.len() != 1 {
         Err(("number of arguments needs `1`").to_string())
     } else {
@@ -1012,7 +1053,7 @@ fn execute_type_check<'a>(expected: Types, actually: &[ExecutionResult<'a>]) -> 
     }
 }
 
-fn execute_not<'a>(vals: &[ExecutionResult<'a>]) -> EResult<'a> {
+fn execute_not(vals: &[ExecutionResult]) -> EResult {
     if vals.len() != 1 {
         Err(("number of arguments needs `1`").to_string())
     } else {
@@ -1030,11 +1071,7 @@ enum ConvType {
     Sym,
 }
 
-fn execute_conversion<'a>(
-    from_ty: ConvType,
-    to_ty: ConvType,
-    vals: &[ExecutionResult<'a>],
-) -> EResult<'a> {
+fn execute_conversion(from_ty: ConvType, to_ty: ConvType, vals: &[ExecutionResult]) -> EResult {
     if vals.len() != 1 {
         Err(("number of arguments needs `1`").to_string())
     } else {
@@ -1082,7 +1119,7 @@ fn execute_conversion<'a>(
     }
 }
 
-fn execute_string_append<'a>(vals: &[ExecutionResult<'a>]) -> EResult<'a> {
+fn execute_string_append(vals: &[ExecutionResult]) -> EResult {
     let mut sp = String::new();
     for item in vals {
         if let ExecutionResult::String(s, _) = item {
@@ -1122,10 +1159,7 @@ enum ListOperationKind {
     SetCdr,
 }
 
-fn execute_list_operation<'a>(
-    operation_kind: ListOperationKind,
-    vals: &[ExecutionResult<'a>],
-) -> EResult<'a> {
+fn execute_list_operation(operation_kind: ListOperationKind, vals: &[ExecutionResult]) -> EResult {
     match operation_kind {
         // TODO: if values if null?, it returns nil in car or cdr
         ListOperationKind::Car => {
@@ -1261,7 +1295,7 @@ fn execute_list_operation<'a>(
                 };
                 Ok(ExecutionResult::List(List::Cons(
                     Box::new(vals[1].clone()),
-                    Box::new(first.cdr().clone()),
+                    Box::new(first.cdr()),
                     *uuid,
                 )))
             }
@@ -1284,7 +1318,7 @@ fn execute_list_operation<'a>(
                     );
                 };
                 Ok(ExecutionResult::List(List::Cons(
-                    Box::new(first.car().clone()),
+                    Box::new(first.car()),
                     Box::new(vals[1].clone()),
                     *uuid,
                 )))
@@ -1299,7 +1333,7 @@ enum EqCompKind {
     Equal, // deep compare
 }
 
-fn execute_comp_operation<'a>(op_kind: EqCompKind, vals: &[ExecutionResult<'a>]) -> EResult<'a> {
+fn execute_comp_operation(op_kind: EqCompKind, vals: &[ExecutionResult]) -> EResult {
     if vals.len() != 2 {
         Err(("number of arguments needs `2`").to_string())
     } else {
