@@ -55,8 +55,12 @@ fn repl() {
                 break;
             }
         }
-        if line.trim_end() == "exit" {
+        if line.trim_end() == "#exit" {
             break;
+        }
+        if line.trim_end() == "#cenv" {
+            println!("{:#?}", repl.get_current_env());
+            continue;
         }
         let result = repl.execute_line(&line);
         if !result.is_empty() {
@@ -108,7 +112,7 @@ fn do_debug() {
                       (if (= n 0)
                       #f
                       (even? (- n 1))))))
-              (even? 88))
+              (even? 548))
           (define cc '(3 (3) (3 #t) . (3 . name)))
           (car cc)
           (car (cdr (cdr cc)))

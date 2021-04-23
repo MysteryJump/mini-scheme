@@ -82,6 +82,10 @@ impl Repl {
             "".to_string()
         }
     }
+
+    pub fn get_current_env(&self) -> &Env {
+        &self.current_env
+    }
 }
 
 impl Default for Repl {

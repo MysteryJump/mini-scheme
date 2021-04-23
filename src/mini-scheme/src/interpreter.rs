@@ -189,352 +189,400 @@ impl Interpreter {
         }
     }
 
-    fn execute_expr(&self, expr: Expr) -> EResult {
-        match expr {
-            Expr::Const(c) => Ok(c.into_with_env(&self.env)),
-            Expr::Id(id) => self
-                .env
-                .get_expr_by_def_name(id)
-                .ok_or_else(|| "Cannot find such name.".to_string()),
-            Expr::Lambda(arg, body) => {
-                Ok(ExecutionResult::Func(arg, body, Uuid::new_v4().as_u128()))
-            }
-            Expr::Apply(func, arg_apply) => {
-                let result_func = self.execute_expr(*func)?;
-                match result_func {
-                    ExecutionResult::Func(arg_func, body, _) => match arg_func {
-                        Arg::Id(id) => {
-                            if arg_apply.len() != 1 {
-                                Err("Args count is not match".to_string())
-                            } else {
-                                self.env.enter_block();
-                                self.env
-                                    .add_define(id, self.execute_expr(arg_apply[0].clone())?);
-                                let result = self.execute_body(body);
-                                self.env.exit_block();
-                                result
-                            }
-                        }
-                        Arg::IdList(ids, rest) => {
-                            if let Some(rest) = rest {
-                                if ids.len() > arg_apply.len() {
-                                    Err("Args count is fewer".to_string())
+    fn execute_expr(&self, mut expr: Expr) -> EResult {
+        let mut tail_depth = 0;
+        loop {
+            let r = match &expr {
+                Expr::Const(c) => Ok(c.clone().into_with_env(&self.env)),
+                Expr::Id(id) => self
+                    .env
+                    .get_expr_by_def_name(id.clone())
+                    .ok_or_else(|| "Cannot find such name.".to_string()),
+                Expr::Lambda(arg, body) => Ok(ExecutionResult::Func(
+                    arg.clone(),
+                    body.clone(),
+                    Uuid::new_v4().as_u128(),
+                )),
+                Expr::Apply(func, arg_apply) => {
+                    let result_func = self.execute_expr(*func.clone())?;
+                    match result_func {
+                        ExecutionResult::Func(arg_func, body, _) => match arg_func {
+                            Arg::Id(id) => {
+                                if arg_apply.len() != 1 {
+                                    Err("Args count is not match".to_string())
                                 } else {
-                                    let ids_len = ids.len();
-                                    let ids = if ids.len() < arg_apply.len() {
-                                        let mut ids = ids;
-                                        ids.append(
-                                            &mut std::iter::repeat(rest.clone())
-                                                .take(arg_apply.len() - ids.len())
-                                                .collect(),
-                                        );
-                                        ids
+                                    self.env.enter_block();
+                                    self.env
+                                        .add_define(id, self.execute_expr(arg_apply[0].clone())?);
+                                    let result = self.execute_body_with_tail(body)?;
+                                    expr = result;
+                                    tail_depth += 1;
+                                    continue;
+                                }
+                            }
+                            Arg::IdList(ids, rest) => {
+                                if let Some(rest) = rest {
+                                    if ids.len() > arg_apply.len() {
+                                        Err("Args count is fewer".to_string())
                                     } else {
-                                        ids
-                                    };
-                                    let executed_results = ids
+                                        let ids_len = ids.len();
+                                        let ids = if ids.len() < arg_apply.len() {
+                                            let mut ids = ids;
+                                            ids.append(
+                                                &mut std::iter::repeat(rest.clone())
+                                                    .take(arg_apply.len() - ids.len())
+                                                    .collect(),
+                                            );
+                                            ids
+                                        } else {
+                                            ids
+                                        };
+                                        let executed_results =
+                                            ids.iter().zip(arg_apply).map(|(name, expr)| {
+                                                (name, self.execute_expr(expr.clone()))
+                                            });
+
+                                        let args = executed_results
+                                            .clone()
+                                            .take(ids.len())
+                                            .collect::<Vec<_>>();
+
+                                        let mut rests = Vec::new();
+                                        for (_, r) in executed_results.skip(ids_len) {
+                                            rests.push(r?);
+                                        }
+                                        let list = ExecutionResult::List((rests, None).into());
+
+                                        self.env.enter_block();
+                                        for (name, result) in args {
+                                            self.env.add_define(name.to_string(), result?);
+                                        }
+
+                                        self.env.add_define(rest, list);
+
+                                        let result = self.execute_body_with_tail(body)?;
+                                        expr = result;
+                                        tail_depth += 1;
+                                        continue;
+                                    }
+                                } else if ids.len() != arg_apply.len() {
+                                    Err("Args count is not match".to_string())
+                                } else {
+                                    self.env.enter_block();
+                                    for (key, result) in ids
                                         .iter()
                                         .zip(arg_apply)
-                                        .map(|(name, expr)| (name, self.execute_expr(expr)));
-
-                                    let args = executed_results
-                                        .clone()
-                                        .take(ids.len())
-                                        .collect::<Vec<_>>();
-
-                                    let mut rests = Vec::new();
-                                    for (_, r) in executed_results.skip(ids_len) {
-                                        rests.push(r?);
+                                        .map(|(name, expr)| (name, self.execute_expr(expr.clone())))
+                                    {
+                                        self.env.add_define(key.to_string(), result?);
                                     }
-                                    let list = ExecutionResult::List((rests, None).into());
-
-                                    self.env.enter_block();
-                                    for (name, result) in args {
-                                        self.env.add_define(name.to_string(), result?);
+                                    let result = self.execute_body_with_tail(body)?;
+                                    expr = result;
+                                    tail_depth += 1;
+                                    continue;
+                                }
+                            }
+                        },
+                        ExecutionResult::EmbeddedFunc(name) => {
+                            let evaleds = arg_apply
+                                .iter()
+                                .map(|x| self.execute_expr(x.clone()))
+                                .collect::<Result<Vec<_>, _>>()?;
+                            match &name as &str {
+                                "+" => execute_number_binary_operation(NumOpKind::Add, &evaleds),
+                                "-" => execute_number_binary_operation(NumOpKind::Sub, &evaleds),
+                                "/" => execute_number_binary_operation(NumOpKind::Div, &evaleds),
+                                "*" => execute_number_binary_operation(NumOpKind::Mul, &evaleds),
+                                "=" => {
+                                    execute_number_binary_comparison(NumCompOpKind::Eq, &evaleds)
+                                }
+                                ">" => {
+                                    execute_number_binary_comparison(NumCompOpKind::Gt, &evaleds)
+                                }
+                                ">=" => {
+                                    execute_number_binary_comparison(NumCompOpKind::Gte, &evaleds)
+                                }
+                                "<" => {
+                                    execute_number_binary_comparison(NumCompOpKind::Lt, &evaleds)
+                                }
+                                "<=" => {
+                                    execute_number_binary_comparison(NumCompOpKind::Lte, &evaleds)
+                                }
+                                "string?" => execute_type_check(Types::String, &evaleds),
+                                "boolean?" => execute_type_check(Types::Bool, &evaleds),
+                                "number?" => execute_type_check(Types::Num, &evaleds),
+                                "symbol?" => execute_type_check(Types::Symbol, &evaleds),
+                                "procedure?" => execute_type_check(Types::Proc, &evaleds),
+                                "not" => execute_not(&evaleds),
+                                "string->number" => {
+                                    execute_conversion(ConvType::Str, ConvType::Num, &evaleds)
+                                }
+                                "number->string" => {
+                                    execute_conversion(ConvType::Num, ConvType::Str, &evaleds)
+                                }
+                                "string->symbol" => {
+                                    execute_conversion(ConvType::Str, ConvType::Sym, &evaleds)
+                                }
+                                "symbol->string" => {
+                                    execute_conversion(ConvType::Sym, ConvType::Str, &evaleds)
+                                }
+                                "string-append" => execute_string_append(&evaleds),
+                                "null?" => execute_type_check(Types::Null, &evaleds),
+                                "pair?" => execute_type_check(Types::Pair, &evaleds),
+                                "list?" => execute_type_check(Types::List, &evaleds),
+                                "car" => execute_list_operation(ListOperationKind::Car, &evaleds),
+                                "cdr" => execute_list_operation(ListOperationKind::Cdr, &evaleds),
+                                "cons" => execute_list_operation(ListOperationKind::Cons, &evaleds),
+                                "list" => execute_list_operation(ListOperationKind::List, &evaleds),
+                                "length" => {
+                                    execute_list_operation(ListOperationKind::Length, &evaleds)
+                                }
+                                "last" => execute_list_operation(ListOperationKind::Last, &evaleds),
+                                "append" => {
+                                    execute_list_operation(ListOperationKind::Append, &evaleds)
+                                }
+                                "set-car!" => {
+                                    let result = execute_list_operation(
+                                        ListOperationKind::SetCar,
+                                        &evaleds,
+                                    )?;
+                                    if let Expr::Id(id) = arg_apply[0].clone() {
+                                        self.env
+                                            .update_entry(id, result)
+                                            .map_err(|_| "Cannot find such name.".to_string())?;
                                     }
-
-                                    self.env.add_define(rest, list);
-
-                                    let result = self.execute_body(body);
-                                    self.env.exit_block();
-                                    result
-                                }
-                            } else if ids.len() != arg_apply.len() {
-                                Err("Args count is not match".to_string())
-                            } else {
-                                self.env.enter_block();
-                                for (key, result) in ids
-                                    .iter()
-                                    .zip(arg_apply)
-                                    .map(|(name, expr)| (name, self.execute_expr(expr)))
-                                {
-                                    self.env.add_define(key.to_string(), result?);
-                                }
-                                let result = self.execute_body(body);
-                                self.env.exit_block();
-                                result
-                            }
-                        }
-                    },
-                    ExecutionResult::EmbeddedFunc(name) => {
-                        let evaleds = arg_apply
-                            .iter()
-                            .map(|x| self.execute_expr(x.clone()))
-                            .collect::<Result<Vec<_>, _>>()?;
-                        match &name as &str {
-                            "+" => execute_number_binary_operation(NumOpKind::Add, &evaleds),
-                            "-" => execute_number_binary_operation(NumOpKind::Sub, &evaleds),
-                            "/" => execute_number_binary_operation(NumOpKind::Div, &evaleds),
-                            "*" => execute_number_binary_operation(NumOpKind::Mul, &evaleds),
-                            "=" => execute_number_binary_comparison(NumCompOpKind::Eq, &evaleds),
-                            ">" => execute_number_binary_comparison(NumCompOpKind::Gt, &evaleds),
-                            ">=" => execute_number_binary_comparison(NumCompOpKind::Gte, &evaleds),
-                            "<" => execute_number_binary_comparison(NumCompOpKind::Lt, &evaleds),
-                            "<=" => execute_number_binary_comparison(NumCompOpKind::Lte, &evaleds),
-                            "string?" => execute_type_check(Types::String, &evaleds),
-                            "boolean?" => execute_type_check(Types::Bool, &evaleds),
-                            "number?" => execute_type_check(Types::Num, &evaleds),
-                            "symbol?" => execute_type_check(Types::Symbol, &evaleds),
-                            "procedure?" => execute_type_check(Types::Proc, &evaleds),
-                            "not" => execute_not(&evaleds),
-                            "string->number" => {
-                                execute_conversion(ConvType::Str, ConvType::Num, &evaleds)
-                            }
-                            "number->string" => {
-                                execute_conversion(ConvType::Num, ConvType::Str, &evaleds)
-                            }
-                            "string->symbol" => {
-                                execute_conversion(ConvType::Str, ConvType::Sym, &evaleds)
-                            }
-                            "symbol->string" => {
-                                execute_conversion(ConvType::Sym, ConvType::Str, &evaleds)
-                            }
-                            "string-append" => execute_string_append(&evaleds),
-                            "null?" => execute_type_check(Types::Null, &evaleds),
-                            "pair?" => execute_type_check(Types::Pair, &evaleds),
-                            "list?" => execute_type_check(Types::List, &evaleds),
-                            "car" => execute_list_operation(ListOperationKind::Car, &evaleds),
-                            "cdr" => execute_list_operation(ListOperationKind::Cdr, &evaleds),
-                            "cons" => execute_list_operation(ListOperationKind::Cons, &evaleds),
-                            "list" => execute_list_operation(ListOperationKind::List, &evaleds),
-                            "length" => execute_list_operation(ListOperationKind::Length, &evaleds),
-                            "last" => execute_list_operation(ListOperationKind::Last, &evaleds),
-                            "append" => execute_list_operation(ListOperationKind::Append, &evaleds),
-                            "set-car!" => {
-                                let result =
-                                    execute_list_operation(ListOperationKind::SetCar, &evaleds)?;
-                                if let Expr::Id(id) = arg_apply[0].clone() {
-                                    self.env
-                                        .update_entry(id, result)
-                                        .map_err(|_| "Cannot find such name.".to_string())?;
-                                }
-                                Ok(ExecutionResult::Unit)
-                            }
-                            "set-cdr!" => {
-                                let result =
-                                    execute_list_operation(ListOperationKind::SetCdr, &evaleds)?;
-                                if let Expr::Id(id) = arg_apply[0].clone() {
-                                    self.env
-                                        .update_entry(id, result)
-                                        .map_err(|_| "Cannot find such name.".to_string())?;
-                                }
-                                Ok(ExecutionResult::Unit)
-                            }
-                            "eq?" => execute_comp_operation(EqCompKind::Eq, &evaleds),
-                            "neq?" => execute_comp_operation(EqCompKind::Neq, &evaleds),
-                            "equal?" => execute_comp_operation(EqCompKind::Equal, &evaleds),
-                            "memq" => execute_list_operation(ListOperationKind::Memq, &evaleds),
-                            "display" => {
-                                if evaleds.len() != 1 {
-                                    Err(("a number of argument needs 1").to_string())
-                                } else {
-                                    println!("{}", evaleds[0]);
                                     Ok(ExecutionResult::Unit)
                                 }
+                                "set-cdr!" => {
+                                    let result = execute_list_operation(
+                                        ListOperationKind::SetCdr,
+                                        &evaleds,
+                                    )?;
+                                    if let Expr::Id(id) = arg_apply[0].clone() {
+                                        self.env
+                                            .update_entry(id, result)
+                                            .map_err(|_| "Cannot find such name.".to_string())?;
+                                    }
+                                    Ok(ExecutionResult::Unit)
+                                }
+                                "eq?" => execute_comp_operation(EqCompKind::Eq, &evaleds),
+                                "neq?" => execute_comp_operation(EqCompKind::Neq, &evaleds),
+                                "equal?" => execute_comp_operation(EqCompKind::Equal, &evaleds),
+                                "memq" => execute_list_operation(ListOperationKind::Memq, &evaleds),
+                                "display" => {
+                                    if evaleds.len() != 1 {
+                                        Err(("a number of argument needs 1").to_string())
+                                    } else {
+                                        println!("{}", evaleds[0]);
+                                        Ok(ExecutionResult::Unit)
+                                    }
+                                }
+                                _ => todo!(),
                             }
-                            _ => todo!(),
+                        }
+                        _ => Err("Cannot apply to not-function".to_string()),
+                    }
+                }
+                Expr::Quote(se) => Ok(match se {
+                    SExpr::Const(c) => {
+                        if matches!(c, Const::Unit) {
+                            ExecutionResult::List(List::Nil)
+                        } else {
+                            c.clone().into_with_env(&self.env)
                         }
                     }
-                    _ => Err("Cannot apply to not-function".to_string()),
-                }
-            }
-            Expr::Quote(se) => Ok(match se {
-                SExpr::Const(c) => {
-                    if matches!(c, Const::Unit) {
-                        ExecutionResult::List(List::Nil)
-                    } else {
-                        c.into_with_env(&self.env)
+                    SExpr::Id(sym) => ExecutionResult::Symbol(sym.clone()),
+                    SExpr::SExprs(m, rest) => {
+                        let results = m
+                            .iter()
+                            .map(|x| self.execute_expr(Expr::Quote(x.clone())))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let rest = if let Some(rest) = rest {
+                            Some(self.execute_expr(Expr::Quote(*rest.clone()))?)
+                        } else {
+                            None
+                        };
+                        ExecutionResult::List((results, rest).into())
                     }
-                }
-                SExpr::Id(sym) => ExecutionResult::Symbol(sym),
-                SExpr::SExprs(m, rest) => {
-                    let results = m
-                        .iter()
-                        .map(|x| self.execute_expr(Expr::Quote(x.clone())))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    let rest = if let Some(rest) = rest {
-                        Some(self.execute_expr(Expr::Quote(*rest))?)
-                    } else {
-                        None
-                    };
-                    ExecutionResult::List((results, rest).into())
-                }
-            }),
-            Expr::Set(name, expr) => self
-                .env
-                .update_entry(name, self.execute_expr(*expr)?)
-                .map_err(|_| "set expr to undefined name".to_string())
-                .map(|_| ExecutionResult::Unit),
-            Expr::Let(name, binds, body) => {
-                let mut calced_bindeds = Vec::new();
-                for (name, expr) in &binds.0 {
-                    calced_bindeds.push((name.clone(), self.execute_expr(expr.clone())?));
-                }
-                self.env.enter_block();
-                self.env.add_defines(calced_bindeds);
-                let result = if let Some(name) = name {
-                    let arg_ls = binds.0.iter().map(|x| x.0.clone()).collect();
-                    let func = ExecutionResult::Func(
-                        Arg::IdList(arg_ls, None),
-                        body.clone(),
-                        Uuid::new_v4().as_u128(),
-                    );
-                    self.env.add_define(name, func);
-
-                    self.execute_body(body)
-                } else {
-                    self.execute_body(body)
-                };
-                self.env.exit_block();
-                result
-            }
-            Expr::LetStar(binds, body) => {
-                let envs_depth = binds.0.len();
-                for (name, expr) in &binds.0 {
-                    self.env
-                        .add_define(name.to_string(), self.execute_expr(expr.clone())?);
-                    self.env.enter_block();
-                }
-                let result = self.execute_body(body);
-                for _ in 0..envs_depth {
-                    self.env.exit_block();
-                }
-                result
-            }
-            Expr::LetRec(binds, body) => {
-                let names = binds.0.iter().map(|x| x.0.clone()).collect::<Vec<_>>();
-                if names.len() != names.iter().collect::<HashSet<_>>().len() {
-                    Err("Cannot use same variable in bindings of letrec".to_string())
-                } else {
-                    self.env.enter_block();
-                    let undefineds = names
-                        .iter()
-                        .map(|x| (x.clone(), ExecutionResult::Undefined))
-                        .collect();
-                    self.env.add_defines(undefineds);
-
+                }),
+                Expr::Set(name, expr) => self
+                    .env
+                    .update_entry(name.clone(), self.execute_expr(*expr.clone())?)
+                    .map_err(|_| "set expr to undefined name".to_string())
+                    .map(|_| ExecutionResult::Unit),
+                Expr::Let(name, binds, body) => {
                     let mut calced_bindeds = Vec::new();
                     for (name, expr) in &binds.0 {
                         calced_bindeds.push((name.clone(), self.execute_expr(expr.clone())?));
                     }
-                    for (name, result) in calced_bindeds {
-                        self.env.update_entry(name, result).unwrap();
-                    }
-                    let result = self.execute_body(body);
-                    self.env.exit_block();
-                    result
-                }
-            }
-            Expr::If(cond, then, els) => {
-                let cond = self.execute_expr(*cond)?;
-                if !matches!(cond, ExecutionResult::Bool(false)) {
-                    self.execute_expr(*then)
-                } else {
-                    match els {
-                        Some(els) => self.execute_expr(*els),
-                        None => Ok(ExecutionResult::Unit),
-                    }
-                }
-            }
-            Expr::Cond(cond) => {
-                for (con_expr, exprs) in cond.0 {
-                    let result = self.execute_expr(con_expr)?;
-                    if !matches!(result, ExecutionResult::Bool(false)) {
-                        let result = exprs
-                            .iter()
-                            .map(|x| self.execute_expr(x.clone()))
-                            .collect::<Result<Vec<_>, _>>()?;
-                        return Ok(result.last().unwrap().clone());
-                    }
-                }
-                if let Some(els) = cond.1 {
-                    let result = els
-                        .iter()
-                        .map(|x| self.execute_expr(x.clone()))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    Ok(result.last().unwrap().clone())
-                } else {
-                    Ok(ExecutionResult::Unit)
-                }
-            }
-            Expr::And(exprs) => {
-                let mut res = ExecutionResult::Unit;
-                for expr in exprs {
-                    res = self.execute_expr(expr)?;
-                    if matches!(res, ExecutionResult::Bool(false)) {
-                        break;
-                    }
-                }
-                Ok(res)
-            }
-            Expr::Or(exprs) => {
-                let mut res = ExecutionResult::Unit;
-                for expr in exprs {
-                    res = self.execute_expr(expr)?;
-                    if !matches!(res, ExecutionResult::Bool(false)) {
-                        break;
-                    }
-                }
-                Ok(res)
-            }
-            Expr::Begin(begin) => {
-                let last = begin
-                    .iter()
-                    .map(|x| self.execute_expr(x.clone()))
-                    .collect::<Result<Vec<_>, _>>()?
-                    .last()
-                    .unwrap()
-                    .clone();
-                Ok(last)
-            }
-            Expr::Do(d) => {
-                self.env.enter_block();
-                let mut map = HashMap::new();
-                for (name, init, step) in &d.0 {
-                    self.env
-                        .add_define(name.to_string(), self.execute_expr(init.clone())?);
-                    map.insert(name, step);
-                }
-                let r = self.execute_expr(*d.1.clone())?;
-                let result;
-                loop {
-                    if !matches!(r, ExecutionResult::Bool(false)) {
-                        result =
-                            d.2.iter()
-                                .map(|x| self.execute_expr(x.clone()))
-                                .collect::<Result<Vec<_>, _>>()?
-                                .last()
-                                .unwrap()
-                                .clone();
-                        break;
-                    } else {
-                        self.execute_body(d.3.clone())?;
-                    }
-                }
+                    self.env.enter_block();
+                    self.env.add_defines(calced_bindeds);
+                    let result = if let Some(name) = name {
+                        let arg_ls = binds.0.iter().map(|x| x.0.clone()).collect();
+                        let func = ExecutionResult::Func(
+                            Arg::IdList(arg_ls, None),
+                            body.clone(),
+                            Uuid::new_v4().as_u128(),
+                        );
+                        self.env.add_define(name.clone(), func);
 
+                        self.execute_body_with_tail(body.clone())?
+                    } else {
+                        self.execute_body_with_tail(body.clone())?
+                    };
+                    tail_depth += 1;
+                    expr = result;
+                    continue;
+                }
+                Expr::LetStar(binds, body) => {
+                    let envs_depth = binds.0.len();
+                    for (name, expr) in &binds.0 {
+                        self.env
+                            .add_define(name.to_string(), self.execute_expr(expr.clone())?);
+                        self.env.enter_block();
+                    }
+                    let result = self.execute_body_with_tail(body.clone())?;
+                    tail_depth += envs_depth;
+                    expr = result;
+                    continue;
+                }
+                Expr::LetRec(binds, body) => {
+                    let names = binds.0.iter().map(|x| x.0.clone()).collect::<Vec<_>>();
+                    if names.len() != names.iter().collect::<HashSet<_>>().len() {
+                        Err("Cannot use same variable in bindings of letrec".to_string())
+                    } else {
+                        self.env.enter_block();
+                        let undefineds = names
+                            .iter()
+                            .map(|x| (x.clone(), ExecutionResult::Undefined))
+                            .collect();
+                        self.env.add_defines(undefineds);
+
+                        let mut calced_bindeds = Vec::new();
+                        for (name, expr) in &binds.0 {
+                            calced_bindeds.push((name.clone(), self.execute_expr(expr.clone())?));
+                        }
+                        for (name, result) in calced_bindeds {
+                            self.env.update_entry(name, result).unwrap();
+                        }
+                        let result = self.execute_body_with_tail(body.clone())?;
+                        tail_depth += 1;
+                        expr = result;
+                        continue;
+                    }
+                }
+                Expr::If(cond, then, els) => {
+                    let cond = self.execute_expr(*cond.clone())?;
+                    if !matches!(cond, ExecutionResult::Bool(false)) {
+                        expr = *then.clone();
+                        continue;
+                    } else {
+                        match els {
+                            Some(els) => {
+                                expr = *els.clone();
+                                continue;
+                            }
+                            None => Ok(ExecutionResult::Unit),
+                        }
+                    }
+                }
+                Expr::Cond(cond) => {
+                    for (con_expr, exprs) in cond.0.clone() {
+                        let result = self.execute_expr(con_expr)?;
+                        if !matches!(result, ExecutionResult::Bool(false)) {
+                            let result = exprs
+                                .iter()
+                                .map(|x| self.execute_expr(x.clone()))
+                                .collect::<Result<Vec<_>, _>>()?;
+                            return Ok(result.last().unwrap().clone());
+                        }
+                    }
+                    if let Some(els) = cond.1.clone() {
+                        let body = Body(Vec::new(), els.clone());
+                        let result = self.execute_body_with_tail(body)?;
+                        expr = result;
+                        continue;
+                    } else {
+                        Ok(ExecutionResult::Unit)
+                    }
+                }
+                Expr::And(exprs) => {
+                    let mut res = ExecutionResult::Unit;
+                    if !exprs.is_empty() {
+                        let last_expr = exprs.last().unwrap().clone();
+                        for expr in exprs.iter().take(exprs.len() - 1) {
+                            res = self.execute_expr(expr.clone())?;
+                            if matches!(res, ExecutionResult::Bool(false)) {
+                                break;
+                            }
+                        }
+                        if matches!(res, ExecutionResult::Bool(false)) {
+                            Ok(res)
+                        } else {
+                            expr = last_expr;
+                            continue;
+                        }
+                    } else {
+                        Ok(ExecutionResult::Bool(true))
+                    }
+                }
+                Expr::Or(exprs) => {
+                    let mut res = ExecutionResult::Unit;
+                    if !exprs.is_empty() {
+                        let last_expr = exprs.last().unwrap().clone();
+                        for exp in exprs.iter().take(exprs.len() - 1) {
+                            res = self.execute_expr(exp.clone())?;
+                            if !matches!(res, ExecutionResult::Bool(false)) {
+                                break;
+                            }
+                        }
+                        if !matches!(res, ExecutionResult::Bool(false)) {
+                            Ok(res)
+                        } else {
+                            expr = last_expr;
+                            continue;
+                        }
+                    } else {
+                        Ok(ExecutionResult::Bool(false))
+                    }
+                }
+                Expr::Begin(begin) => {
+                    let body = Body(Vec::new(), begin.clone());
+                    let result = self.execute_body_with_tail(body)?;
+                    expr = result;
+                    continue;
+                }
+                Expr::Do(d) => {
+                    self.env.enter_block();
+                    let mut map = HashMap::new();
+                    for (name, init, step) in &d.0 {
+                        self.env
+                            .add_define(name.to_string(), self.execute_expr(init.clone())?);
+                        map.insert(name, step);
+                    }
+                    let r = self.execute_expr(*d.1.clone())?;
+                    let tail_expr;
+                    loop {
+                        if !matches!(r, ExecutionResult::Bool(false)) {
+                            // d.2 is tail sequence
+                            let body = Body(Vec::new(), d.2.clone());
+                            let tail = self.execute_body_with_tail(body)?;
+                            tail_expr = tail;
+
+                            break;
+                        } else {
+                            self.execute_body(d.3.clone())?;
+                        }
+                    }
+                    tail_depth += 1;
+                    expr = tail_expr;
+                    continue;
+                }
+            };
+            for _ in 0..tail_depth {
                 self.env.exit_block();
-                Ok(result)
             }
+            return r;
         }
     }
 
@@ -562,6 +610,21 @@ impl Interpreter {
             .map(|x| self.execute_expr(x.clone()))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(results.last().unwrap().clone())
+    }
+
+    fn execute_body_with_tail(&self, body: Body) -> Result<Expr, String> {
+        body.0
+            .iter()
+            .map(|x| self.execute_define(x.clone()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let expr_len = body.1.len();
+        let last = body.1.last().unwrap().clone();
+        body.1
+            .iter()
+            .skip(expr_len)
+            .map(|x| self.execute_expr(x.clone()))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(last)
     }
 }
 
