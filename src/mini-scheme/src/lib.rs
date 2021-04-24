@@ -1,5 +1,7 @@
 #![feature(bool_to_option)]
 
+use std::sync::Arc;
+
 use either::Either;
 use interpreter::{Env, Interpreter};
 use parser::Parser;
@@ -21,7 +23,7 @@ pub fn execute(source: &str) -> Vec<Result<String, String>> {
     // );
     let mut results = Vec::new();
     let parser = Parser::new(lexed);
-    let interpreter = Interpreter::new();
+    let interpreter = Interpreter::new(Arc::new(|x| println!("{}", x)));
     while let Some(pp) = parser.parse_toplevel() {
         match interpreter.execute_toplevel(pp) {
             Either::Left(result) => {
@@ -35,6 +37,7 @@ pub fn execute(source: &str) -> Vec<Result<String, String>> {
     results
 }
 
+#[derive(Clone)]
 pub struct Repl {
     current_env: Env,
 }
@@ -42,7 +45,7 @@ pub struct Repl {
 impl Repl {
     pub fn new() -> Self {
         Self {
-            current_env: Env::new(),
+            current_env: Env::new(Arc::new(|x| println!("{}", x))),
         }
     }
 

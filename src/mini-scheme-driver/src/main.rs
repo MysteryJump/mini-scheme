@@ -1,5 +1,13 @@
-use std::env;
-use std::io::Write;
+#![feature(async_closure)]
+
+use std::{
+    env,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+};
+use std::{io::Write, process::exit};
 
 use mini_scheme::Repl;
 
@@ -9,7 +17,8 @@ r#"Usage: mins [options] [file]
 Options:
     --repl, -r  REPL mode"#;
 
-fn main() {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = env::args().skip(1).collect::<Vec<_>>();
     let mut is_repl = false;
     let mut is_help = false;
@@ -28,7 +37,7 @@ fn main() {
     }
 
     if is_repl {
-        repl();
+        repl().await;
     } else if is_help {
         println!("{}", HELP_TEXT);
     } else if is_debug {
@@ -38,12 +47,31 @@ fn main() {
     } else {
         println!("{}", HELP_TEXT);
     }
+    Ok(())
 }
 
-fn repl() {
+async fn repl() {
     let mut repl = Repl::new();
+    // let (tx2, rx2) = tokio::sync::mpsc::channel(2);
+    // let rx2 = Arc::new(tokio::sync::Mutex::new(rx2));
+
+    // let call_exit = Arc::new(AtomicBool::new(true));
+    // let in_handler = call_exit.clone();
+
+    // ctrlc::set_handler(move || {
+    //     if in_handler.load(Ordering::SeqCst) {
+    //         exit(0);
+    //     } else {
+    //         #[allow(unused_must_use)]
+    //         tx2.send(());
+    //     }
+    // })
+    // .unwrap();
 
     loop {
+        let (tx1, rx1) = tokio::sync::oneshot::channel();
+        // let rx2 = rx2.clone();
+
         let mut line = String::new();
         print!("> ");
         std::io::stdout().flush().unwrap();
@@ -58,15 +86,70 @@ fn repl() {
         if line.trim_end() == "#exit" {
             break;
         }
-        if line.trim_end() == "#cenv" {
-            println!("{:#?}", repl.get_current_env());
-            continue;
+
+        let before_repl = repl.clone();
+        // call_exit.store(false, Ordering::SeqCst);
+
+        let mut stream =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap();
+
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = stream.recv() => {
+                    println!("Ctrl+C");
+                    let _ = tx1.send(None);
+                }
+                val = call_repl(repl, line) => {
+                    let _ = tx1.send(Some(val));
+                }
+
+            }
+        });
+
+        let res = rx1.await.unwrap();
+
+        if let Some(r) = res {
+            repl = r;
+        } else {
+            repl = before_repl;
         }
+
+        unsafe {
+            signal_hook_registry::register(signal_hook::consts::SIGINT, || {
+                println!();
+                exit(0);
+            })
+        }
+        .unwrap();
+
+        // call_exit.store(true, Ordering::SeqCst);
+
+        // repl = std::thread::spawn(move || {
+        //     if line.trim_end() == "#cenv" {
+        //         println!("{:#?}", repl.get_current_env());
+        //     } else {
+        //         let result = repl.execute_line(&line);
+        //         if !result.is_empty() {
+        //             println!("{}", result);
+        //         }
+        //     }
+        //     repl
+        // })
+        // .join()
+        // .unwrap();
+    }
+}
+
+async fn call_repl(mut repl: Repl, line: String) -> Repl {
+    if line.trim_end() == "#cenv" {
+        println!("{:#?}", repl.get_current_env());
+    } else {
         let result = repl.execute_line(&line);
         if !result.is_empty() {
             println!("{}", result);
         }
     }
+    repl
 }
 
 fn do_debug() {

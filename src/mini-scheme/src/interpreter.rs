@@ -2,6 +2,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     fmt::Display,
+    sync::Arc,
 };
 
 use either::Either;
@@ -22,15 +23,26 @@ macro_rules! add_embfunc {
     };
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Clone)]
 pub struct Env {
     defineds: RefCell<HashMap<u32, HashMap<String, ExecutionResult>>>,
     current_depth: Cell<u32>,
     str_consts_pairs: RefCell<HashMap<String, u128>>,
+    logger: Arc<dyn Fn(String) + Sync + Send>,
+}
+
+impl std::fmt::Debug for Env {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
+        f.debug_struct("Env")
+            .field("defineds", &self.defineds)
+            .field("current_depth", &self.current_depth)
+            .field("str_consts_pairs", &self.str_consts_pairs)
+            .finish()
+    }
 }
 
 impl Env {
-    pub fn new() -> Self {
+    pub fn new(logger: Arc<dyn Fn(String) + Sync + Send>) -> Self {
         Self {
             defineds: {
                 let mut map = HashMap::new();
@@ -39,6 +51,7 @@ impl Env {
             },
             current_depth: Cell::new(0),
             str_consts_pairs: RefCell::new(HashMap::new()),
+            logger,
         }
     }
 
@@ -143,8 +156,10 @@ pub struct Interpreter {
 }
 
 impl Interpreter {
-    pub fn new() -> Self {
-        Self { env: Env::new() }
+    pub fn new(logger: Arc<dyn Fn(String) + Sync + Send>) -> Self {
+        Self {
+            env: Env::new(logger),
+        }
     }
 
     pub fn with_env(env: Env) -> Self {
@@ -373,7 +388,7 @@ impl Interpreter {
                                     if evaleds.len() != 1 {
                                         Err(("a number of argument needs 1").to_string())
                                     } else {
-                                        println!("{}", evaleds[0]);
+                                        (*self.env.logger.clone())(evaleds[0].to_string());
                                         Ok(ExecutionResult::Unit)
                                     }
                                 }
@@ -621,7 +636,7 @@ impl Interpreter {
         let last = body.1.last().unwrap().clone();
         body.1
             .iter()
-            .skip(expr_len)
+            .take(expr_len - 1)
             .map(|x| self.execute_expr(x.clone()))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(last)
