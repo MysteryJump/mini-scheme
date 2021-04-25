@@ -14,6 +14,18 @@
                 #f
                 (even? (- n 1))))))
     (display "9999 is even?")
-    (if (even? 7000) (display "Yes") (display "No!"))
+    (if (even? 9999) (display "Yes") (display "No!"))
 )
+
+(display (let loop ((numbers '(3 -2 1 6 -5)) (nonneg '()) (neg '()))
+    (cond 
+        ((null? numbers) (list nonneg neg))
+        ((>= (car numbers) 0)
+            (loop (cdr numbers)
+            (cons (car numbers) nonneg)
+            neg))
+            ((< (car numbers) 0)
+            (loop (cdr numbers)
+        nonneg
+    (cons (car numbers) neg))))))
 

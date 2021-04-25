@@ -273,7 +273,6 @@ impl Parser {
                         }
                     }
 
-                    self.eat_close().unwrap();
                     Expr::Cond(Cond(conds, els))
                 }
                 TokenKind::Ident(t) if t == "and" || t == "or" || t == "begin" => {

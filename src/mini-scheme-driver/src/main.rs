@@ -216,11 +216,10 @@ fn do_debug() {
         "#,
         // TODO: Add some test
         // TODO: parser error
-        // TODO: lexer negative number
     )
     .iter()
     .for_each(|x| match x {
-        Ok(_) => {}
+        Ok(o) => println!("{}", o),
         Err(e) => eprintln!("{}", e),
     });
 }

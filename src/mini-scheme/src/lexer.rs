@@ -203,7 +203,9 @@ fn ident_or_num<'a>(chars: &mut Chars, src: &'a str, bf: Span) -> Token {
                 ..bf
             },
         }
-    } else if f.is_ascii_digit() && ch.iter().all(|x| x.is_ascii_digit()) {
+    } else if (f.is_ascii_digit() || (f == '-' && !ch.is_empty()))
+        && ch.iter().all(|x| x.is_ascii_digit())
+    {
         ch.insert(0, f);
         let len = ch.len() as i32;
         Token {
