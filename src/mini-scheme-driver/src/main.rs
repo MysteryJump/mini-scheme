@@ -58,6 +58,32 @@ fn main() {
         (eq? y "aaa")
         (define (Hack x y . z) z)
         (Hack 1 2 3 4 5)
+        
+        (define (even? x)
+            (if (= x 0) #t (odd? (- x 1))))
+        (define (odd? x)
+            (if (= x 0) #f (even? (- x 1))))
+        (even? 1)
+        (even? 53)
+        (even? 2)
+        (let loop ((numbers '(3 -2 1 6 -5)) (nonneg '()) (neg '()))
+    (cond
+        ((null? numbers) (list nonneg neg))
+        ((>= (car numbers) 0)
+            (loop (cdr numbers)
+            (cons (car numbers) nonneg)
+            neg))
+            ((< (car numbers) 0)
+            (loop (cdr numbers)
+        nonneg
+    (cons (car numbers) neg)))))
+    (define (sum n)
+  (let iter ((i n) (s 0))
+    (if (= i 0)
+        s
+        (iter (- i 1) (+ i s)))))
+
+(sum 10)
         "#,
         // TODO: Add some test
     )

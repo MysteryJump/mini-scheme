@@ -261,7 +261,7 @@ impl<'a> Parser<'a> {
                         }
                     }
 
-                    self.eat_close().unwrap();
+                    // self.eat_close().unwrap();
                     Expr::Cond(Cond(conds, els))
                 }
                 TokenKind::Ident(t @ ("and" | "or" | "begin")) => {

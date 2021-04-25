@@ -47,18 +47,16 @@ impl<'a> Env<'a> {
     }
 
     pub fn add_defines(&self, pairs: Vec<(&'a str, ExecutionResult<'a>)>) {
-        self.defineds
-            .borrow_mut()
-            .get_mut(&self.current_depth.get())
-            .unwrap()
-            .extend(pairs);
+        for (name, result) in pairs {
+            self.add_define(name, result);
+        }
     }
 
     pub fn get_expr_by_def_name(&self, name: &'a str) -> Option<ExecutionResult<'a>> {
         let cdepth = self.current_depth.get();
         for i in 0..=cdepth {
             if self.defineds.borrow()[&(cdepth - i)].contains_key(name) {
-                return Some(self.defineds.borrow_mut()[&(cdepth - i)][&name].clone());
+                return Some(self.defineds.borrow()[&(cdepth - i)][&name].clone());
             }
         }
         None
@@ -224,13 +222,15 @@ impl<'a> Interpreter<'a> {
                                 Err("Args count is not match".to_string())
                             } else {
                                 self.env.enter_block();
+                                let mut binds = Vec::new();
                                 for (key, result) in ids
                                     .iter()
                                     .zip(arg_apply)
                                     .map(|(name, expr)| (name, self.execute_expr(expr.clone())))
                                 {
-                                    self.env.add_define(key, result?);
+                                    binds.push((*key, result?));
                                 }
+                                self.env.add_defines(binds);
                                 let result = self.execute_body(body);
                                 self.env.exit_block();
                                 result
@@ -1152,7 +1152,7 @@ fn execute_list_operation<'a>(
             } else {
                 Ok(List::Cons(
                     Box::new(vals[0].clone()),
-                    Box::new(vals[0].clone()),
+                    Box::new(vals[1].clone()),
                     Uuid::new_v4().as_u128(),
                 )
                 .into())
