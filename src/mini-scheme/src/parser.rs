@@ -14,20 +14,13 @@ use super::ast::Cond;
 #[derive(Debug)]
 pub struct TokenStack {
     ind: Cell<i32>,
-    // tokens: RefCell<Vec<&'a Token<'a>>>,
     tokens: RefCell<Vec<Token>>,
 }
 
 impl TokenStack {
     pub fn new(tokens: Vec<Token>) -> Self {
         Self {
-            // tokens: std::cell::RefCell::new(
-            //     tokens
-            //         .iter()
-            //         .filter(|x| x.kind != TokenKind::Other)
-            //         .collect::<Vec<_>>(),
-            // ),
-            ind: std::cell::Cell::new(-1),
+            ind: Cell::new(-1),
             tokens: RefCell::new(
                 tokens
                     .into_iter()
@@ -339,7 +332,6 @@ impl Parser {
                     Expr::Do(super::ast::Do(itervar, Box::new(cond), vals, body))
                 }
                 TokenKind::CloseParen => {
-                    self.tokens.next();
                     self.eat_close().unwrap();
                     Expr::Const(().into())
                 }
@@ -606,5 +598,346 @@ impl Parser {
             .eat(TokenKind::CloseParen)
             .then_some(())
             .ok_or(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{ast::Do, lexer};
+
+    use super::*;
+
+    fn get_toplevel_ast(src: &'static str) -> TopLevel {
+        let tokens = lexer::lex(src);
+        let parser = Parser::new(tokens);
+        parser.parse_toplevel().unwrap()
+    }
+
+    fn get_expr(src: &'static str) -> Expr {
+        let tokens = lexer::lex(src);
+        let parser = Parser::new(tokens);
+        parser.parse_expr()
+    }
+
+    fn get_body(src: &'static str) -> Body {
+        let tokens = lexer::lex(src);
+        let parser = Parser::new(tokens);
+        parser.parse_body()
+    }
+
+    fn get_bindings(src: &'static str) -> Bindings {
+        let tokens = lexer::lex(src);
+        let parser = Parser::new(tokens);
+        parser.parse_bindings()
+    }
+
+    fn get_sexpr(src: &'static str) -> SExpr {
+        let tokens = lexer::lex(src);
+        let parser = Parser::new(tokens);
+        parser.parse_sexpr()
+    }
+
+    fn get_arg(src: &'static str) -> Arg {
+        let tokens = lexer::lex(src);
+        let parser = Parser::new(tokens);
+        parser.parse_arg()
+    }
+
+    #[test]
+    fn test_parse_load() {
+        let toplevel = get_toplevel_ast(r#"(load "test.scm")"#);
+        assert_eq!(TopLevel::Load("test.scm".to_string()), toplevel);
+    }
+
+    #[test]
+    fn test_parse_define() {
+        let tl = get_toplevel_ast("(define a 3)");
+        assert_eq!(
+            TopLevel::Define(Define::Define("a".to_string(), Expr::Const(3.into()))),
+            tl
+        );
+        let tl = get_toplevel_ast("(define (a b c) 3)");
+        assert_eq!(
+            TopLevel::Define(Define::DefineList(
+                (
+                    "a".to_string(),
+                    vec!["b".to_string(), "c".to_string()],
+                    None
+                ),
+                Body(Vec::new(), vec![Expr::Const(3.into())])
+            ),),
+            tl
+        );
+        let tl = get_toplevel_ast("(define (a b . c) 3)");
+        assert_eq!(
+            TopLevel::Define(Define::DefineList(
+                (
+                    "a".to_string(),
+                    vec!["b".to_string()],
+                    Some("c".to_string())
+                ),
+                Body(Vec::new(), vec![Expr::Const(3.into())])
+            )),
+            tl
+        )
+    }
+
+    #[test]
+    fn test_const() {
+        let c = get_expr("3");
+        assert_eq!(Expr::Const(3.into()), c);
+        let c = get_expr("#t");
+        assert_eq!(Expr::Const(true.into()), c);
+        let c = get_expr("-3");
+        assert_eq!(Expr::Const((-3).into()), c);
+        let c = get_expr("\"src\"");
+        assert_eq!(Expr::Const("src".into()), c);
+        let c = get_expr("()");
+        assert_eq!(Expr::Const(().into()), c);
+    }
+
+    #[test]
+    fn test_id() {
+        let id = get_expr("<src>");
+        assert_eq!(Expr::Id("<src>".to_string()), id);
+        let id = get_expr("src");
+        assert_eq!(Expr::Id("src".to_string()), id);
+        let id = get_expr("-3.3");
+        assert_eq!(Expr::Id("-3.3".to_string()), id);
+    }
+
+    #[test]
+    fn test_body() {
+        let body = get_body("(define a 30) (define b 50) (+ 50 30)");
+        assert_eq!(
+            Body(
+                vec![
+                    Define::Define("a".to_string(), Expr::Const(30.into())),
+                    Define::Define("b".to_string(), Expr::Const(50.into()))
+                ],
+                vec![Expr::Apply(
+                    Box::new(Expr::Id("+".to_string())),
+                    vec![Expr::Const(50.into()), Expr::Const(30.into())]
+                )]
+            ),
+            body
+        );
+    }
+
+    #[test]
+    fn test_bindings() {
+        let b = get_bindings("((a 30) (b 50))");
+        assert_eq!(
+            Bindings(vec![
+                ("a".to_string(), Expr::Const(30.into())),
+                ("b".to_string(), Expr::Const(50.into()))
+            ]),
+            b
+        );
+    }
+
+    #[test]
+    fn test_sexpr() {
+        let s = get_sexpr("(3 () 3 . (4 . 3))");
+        assert_eq!(
+            SExpr::SExprs(
+                vec![
+                    SExpr::Const(3.into()),
+                    SExpr::Const(().into()), // not SExpr::SExprs(Vec::new(), None)
+                    SExpr::Const(3.into())
+                ],
+                Some(Box::new(SExpr::SExprs(
+                    vec![SExpr::Const(4.into())],
+                    Some(Box::new(SExpr::Const(3.into())))
+                )))
+            ),
+            s
+        );
+    }
+
+    #[test]
+    fn test_arg() {
+        let a = get_arg("id");
+        assert_eq!(Arg::Id("id".to_string()), a);
+        let a = get_arg("(id id . id)");
+        assert_eq!(
+            Arg::IdList(
+                vec!["id".to_string(), "id".to_string()],
+                Some("id".to_string())
+            ),
+            a
+        );
+    }
+
+    #[test]
+    fn test_lambda() {
+        let l = get_expr("(lambda x 3)");
+        assert_eq!(
+            Expr::Lambda(
+                Arg::Id("x".to_string()),
+                Body(Vec::new(), vec![Expr::Const(3.into())])
+            ),
+            l
+        );
+    }
+
+    #[test]
+    fn test_apply() {
+        let a = get_expr("(+ 3 3)");
+        assert_eq!(
+            Expr::Apply(
+                Box::new(Expr::Id("+".to_string())),
+                vec![Expr::Const(3.into()), Expr::Const(3.into())]
+            ),
+            a
+        );
+    }
+
+    #[test]
+    fn test_set() {
+        let s = get_expr("(set! a 0)");
+        assert_eq!(
+            Expr::Set("a".to_string(), Box::new(Expr::Const(0.into()))),
+            s
+        );
+    }
+
+    #[test]
+    fn test_quote() {
+        let q = get_expr("(quote (3))");
+        assert_eq!(
+            Expr::Quote(SExpr::SExprs(vec![SExpr::Const(3.into())], None)),
+            q
+        );
+        let q = get_expr("'(3)");
+        assert_eq!(
+            Expr::Quote(SExpr::SExprs(vec![SExpr::Const(3.into())], None)),
+            q
+        );
+    }
+
+    #[test]
+    fn test_let() {
+        let l = get_expr("(let id () 3)");
+        assert_eq!(
+            Expr::Let(
+                Some("id".to_string()),
+                Bindings(Vec::new()),
+                Body(Vec::new(), vec![Expr::Const(3.into())])
+            ),
+            l
+        );
+        let l = get_expr("(let () 3)");
+        assert_eq!(
+            Expr::Let(
+                None,
+                Bindings(Vec::new()),
+                Body(Vec::new(), vec![Expr::Const(3.into())])
+            ),
+            l
+        );
+        let l = get_expr("(let* ((o (+ 3 4))) 3)");
+        assert_eq!(
+            Expr::LetStar(
+                Bindings(vec![(
+                    "o".to_string(),
+                    Expr::Apply(
+                        Box::new(Expr::Id("+".to_string())),
+                        vec![Expr::Const(3.into()), Expr::Const(4.into())]
+                    )
+                )]),
+                Body(Vec::new(), vec![Expr::Const(3.into())])
+            ),
+            l
+        );
+        let l = get_expr("(letrec () 3)");
+        assert_eq!(
+            Expr::LetRec(
+                Bindings(Vec::new()),
+                Body(Vec::new(), vec![Expr::Const(3.into())])
+            ),
+            l
+        );
+    }
+
+    #[test]
+    fn test_if() {
+        let i = get_expr("(if #t #f #f)");
+        assert_eq!(
+            Expr::If(
+                Box::new(Expr::Const(true.into())),
+                Box::new(Expr::Const(false.into())),
+                Some(Box::new(Expr::Const(false.into())))
+            ),
+            i
+        );
+        let i = get_expr("(if #f #f)");
+        assert_eq!(
+            Expr::If(
+                Box::new(Expr::Const(false.into())),
+                Box::new(Expr::Const(false.into())),
+                None
+            ),
+            i
+        );
+    }
+
+    #[test]
+    fn test_cond() {
+        let c = get_expr("(cond (#t 3 3) (#f 3))");
+        assert_eq!(
+            Expr::Cond(Cond(
+                vec![
+                    (
+                        Expr::Const(true.into()),
+                        vec![Expr::Const(3.into()), Expr::Const(3.into())]
+                    ),
+                    (Expr::Const(false.into()), vec![Expr::Const(3.into())])
+                ],
+                None
+            )),
+            c
+        );
+        let c = get_expr("(cond (#t 3 3) (else 3))");
+        assert_eq!(
+            Expr::Cond(Cond(
+                vec![(
+                    Expr::Const(true.into()),
+                    vec![Expr::Const(3.into()), Expr::Const(3.into())]
+                ),],
+                Some(vec![Expr::Const(3.into())])
+            )),
+            c
+        );
+    }
+
+    #[test]
+    fn test_and_or_begin() {
+        let a = get_expr("(and #t #f)");
+        assert_eq!(
+            Expr::And(vec![Expr::Const(true.into()), Expr::Const(false.into())]),
+            a
+        );
+    }
+
+    #[test]
+    fn test_do() {
+        let d = get_expr("(do ((id 3 (+ id 7))) (#t id) 3)");
+        assert_eq!(
+            Expr::Do(Do(
+                vec![(
+                    "id".to_string(),
+                    Expr::Const(3.into()),
+                    Expr::Apply(
+                        Box::new(Expr::Id("+".to_string())),
+                        vec![Expr::Id("id".to_string()), Expr::Const(7.into())],
+                    )
+                )],
+                Box::new(Expr::Const(true.into())),
+                vec![Expr::Id("id".to_string())],
+                Body(Vec::new(), vec![Expr::Const(3.into())])
+            )),
+            d
+        );
     }
 }

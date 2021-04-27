@@ -90,6 +90,7 @@ fn next_token(src: &str, before_span: Span) -> Option<Token> {
             span: Span {
                 ln: before_span.ln + 1,
                 abs: before_span.abs + 1,
+                len: 1,
                 ..before_span
             },
         },

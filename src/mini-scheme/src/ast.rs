@@ -1,13 +1,13 @@
 use std::fmt::Display;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TopLevel {
     Expr(Expr),
     Define(Define),
     Load(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Const(Const),
     Id(String),
@@ -26,10 +26,10 @@ pub enum Expr {
     Do(Do),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Cond(pub Vec<(Expr, Vec<Expr>)>, pub Option<Vec<Expr>>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Do(
     pub Vec<(String, Expr, Expr)>,
     pub Box<Expr>,
@@ -37,13 +37,13 @@ pub struct Do(
     pub Body,
 );
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Define {
     Define(String, Expr),
     DefineList((String, Vec<String>, Option<String>), Body),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Const {
     Str(String),
     Bool(bool),
@@ -69,6 +69,12 @@ impl From<String> for Const {
     }
 }
 
+impl From<&str> for Const {
+    fn from(s: &str) -> Self {
+        Self::Str(s.to_string())
+    }
+}
+
 impl From<()> for Const {
     fn from(_: ()) -> Self {
         Self::Unit
@@ -87,20 +93,20 @@ impl Display for Const {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Body(pub Vec<Define>, pub Vec<Expr>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Bindings(pub Vec<(String, Expr)>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SExpr {
     Const(Const),
     Id(String),
     SExprs(Vec<SExpr>, Option<Box<SExpr>>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Arg {
     Id(String),
     IdList(Vec<String>, Option<String>),

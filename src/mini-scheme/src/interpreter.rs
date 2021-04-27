@@ -18,7 +18,7 @@ type EResult = Result<ExecutionResult, String>;
 macro_rules! add_embfunc {
     ($map:ident,$($name:expr),*) => {
         $(
-            $map.insert($name.to_string(), ExecutionResult::EmbeddedFunc($name.to_string()));
+            $map.insert($name.to_string(), ExecutionResult::EmbeddedFunc($name));
         )*
     };
 }
@@ -26,6 +26,8 @@ macro_rules! add_embfunc {
 #[derive(Clone)]
 pub struct Env {
     defineds: RefCell<HashMap<u32, HashMap<String, ExecutionResult>>>,
+    overwritten_builtins: RefCell<HashSet<String>>,
+    builtins: HashMap<String, ExecutionResult>,
     current_depth: Cell<u32>,
     str_consts_pairs: RefCell<HashMap<String, u128>>,
     logger: Arc<dyn Fn(String) + Sync + Send>,
@@ -37,25 +39,32 @@ impl std::fmt::Debug for Env {
             .field("defineds", &self.defineds)
             .field("current_depth", &self.current_depth)
             .field("str_consts_pairs", &self.str_consts_pairs)
+            .field("overwritten_builtins", &self.overwritten_builtins)
             .finish()
     }
 }
 
 impl Env {
     pub fn new(logger: Arc<dyn Fn(String) + Sync + Send>) -> Self {
+        let builtins = Self::get_embedded_func_names();
         Self {
             defineds: {
                 let mut map = HashMap::new();
-                map.insert(0, Self::get_embedded_func_names());
+                map.insert(0, builtins.clone());
                 RefCell::new(map)
             },
             current_depth: Cell::new(0),
             str_consts_pairs: RefCell::new(HashMap::new()),
             logger,
+            overwritten_builtins: RefCell::new(HashSet::new()),
+            builtins,
         }
     }
 
     pub fn add_define(&self, name: String, result: ExecutionResult) {
+        if self.builtins.contains_key(&name) {
+            self.overwritten_builtins.borrow_mut().insert(name.clone());
+        }
         self.defineds
             .borrow_mut()
             .get_mut(&self.current_depth.get())
@@ -70,6 +79,10 @@ impl Env {
     }
 
     pub fn get_expr_by_def_name(&self, name: String) -> Option<ExecutionResult> {
+        if self.builtins.contains_key(&name) && !self.overwritten_builtins.borrow().contains(&name)
+        {
+            return Some(self.builtins[&name].clone());
+        }
         let cdepth = self.current_depth.get();
         for i in 0..=cdepth {
             if self.defineds.borrow()[&(cdepth - i)].contains_key(&name) {
@@ -571,14 +584,27 @@ impl Interpreter {
                 Expr::Do(d) => {
                     self.env.enter_block();
                     let mut map = HashMap::new();
+                    let mut binds = Vec::new();
                     for (name, init, step) in &d.0 {
-                        self.env
-                            .add_define(name.to_string(), self.execute_expr(init.clone())?);
-                        map.insert(name, step);
+                        binds.push((name.to_string(), self.execute_expr(init.clone())?));
+                        map.insert(name, step.clone());
                     }
-                    let r = self.execute_expr(*d.1.clone())?;
+                    self.env.add_defines(binds);
+                    let mut is_first = true;
                     let tail_expr;
                     loop {
+                        if !is_first {
+                            let mut updates = Vec::new();
+                            for (name, step) in &map {
+                                updates.push((name.to_string(), self.execute_expr(step.clone())?));
+                            }
+                            for (name, result) in updates {
+                                self.env
+                                    .update_entry(name, result)
+                                    .map_err(|_| "Cannot find such a identifier")?;
+                            }
+                        }
+                        let r = self.execute_expr(*d.1.clone())?;
                         if !matches!(r, ExecutionResult::Bool(false)) {
                             // d.2 is tail sequence
                             let body = Body(Vec::new(), d.2.clone());
@@ -589,6 +615,7 @@ impl Interpreter {
                         } else {
                             self.execute_body(d.3.clone())?;
                         }
+                        is_first = false;
                     }
                     tail_depth += 1;
                     expr = tail_expr;
@@ -653,7 +680,7 @@ pub enum ExecutionResult {
     Func(Arg, Body, u128),
     List(List),
     Unit,
-    EmbeddedFunc(String),
+    EmbeddedFunc(&'static str),
     Undefined,
 }
 
