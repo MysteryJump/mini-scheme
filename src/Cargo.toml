@@ -4,3 +4,5 @@ members = [
     "./mini-scheme",
     "./mini-scheme-driver"
 ]
+# [profile.release]
+# debug = true

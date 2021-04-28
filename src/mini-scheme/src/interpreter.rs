@@ -25,9 +25,7 @@ macro_rules! add_embfunc {
 
 #[derive(Clone)]
 pub struct Env {
-    defineds: RefCell<Vec<HashMap<String, ExecutionResult>>>,
-    overwritten_builtins: RefCell<HashSet<String>>,
-    builtins: HashMap<String, ExecutionResult>,
+    defineds: RefCell<Vec<HashMap<String, (ExecutionResult, i32)>>>,
     current_depth: Cell<u32>,
     str_consts_pairs: RefCell<HashMap<String, u128>>,
     logger: Arc<dyn Fn(String) + Sync + Send>,
@@ -39,7 +37,6 @@ impl std::fmt::Debug for Env {
             .field("defineds", &self.defineds)
             .field("current_depth", &self.current_depth)
             .field("str_consts_pairs", &self.str_consts_pairs)
-            .field("overwritten_builtins", &self.overwritten_builtins)
             .finish()
     }
 }
@@ -49,26 +46,25 @@ impl Env {
         let builtins = Self::get_embedded_func_names();
         Self {
             defineds: {
-                let map = vec![builtins.clone()];
+                let map = vec![builtins
+                    .iter()
+                    .map(|x| (x.0.clone(), (x.1.clone(), 0)))
+                    .collect()];
                 RefCell::new(map)
             },
             current_depth: Cell::new(0),
             str_consts_pairs: RefCell::new(HashMap::new()),
             logger,
-            overwritten_builtins: RefCell::new(HashSet::new()),
-            builtins,
         }
     }
 
     pub fn add_define(&self, name: String, result: ExecutionResult) {
-        if self.builtins.contains_key(&name) {
-            self.overwritten_builtins.borrow_mut().insert(name.clone());
-        }
+        let cdepth = self.current_depth.get();
         self.defineds
             .borrow_mut()
-            .get_mut(self.current_depth.get() as usize)
+            .get_mut(cdepth as usize)
             .unwrap()
-            .insert(name, result);
+            .insert(name, (result, cdepth as i32));
     }
 
     pub fn add_defines(&self, pairs: Vec<(String, ExecutionResult)>) {
@@ -78,23 +74,16 @@ impl Env {
     }
 
     pub fn get_expr_by_def_name(&self, name: String) -> Option<ExecutionResult> {
-        if self.builtins.contains_key(&name) && !self.overwritten_builtins.borrow().contains(&name)
-        {
-            return Some(self.builtins[&name].clone());
-        }
         let cdepth = self.current_depth.get();
-        for i in 0..=cdepth {
-            if self.defineds.borrow()[(cdepth - i) as usize].contains_key(&name) {
-                let r = self.defineds.borrow()[(cdepth - i) as usize][&name].clone();
-                return Some(r);
-            }
-        }
-        None
+
+        let rf = self.defineds.borrow();
+        rf[cdepth as usize].get(&name).cloned().map(|x| x.0)
     }
 
     pub fn enter_block(&self) {
         let ndepth = self.current_depth.get() + 1;
-        self.defineds.borrow_mut().push(HashMap::new());
+        let next = self.defineds.borrow().last().unwrap().clone();
+        self.defineds.borrow_mut().push(next);
         self.current_depth.set(ndepth);
     }
 
@@ -110,18 +99,22 @@ impl Env {
         result: ExecutionResult,
     ) -> Result<ExecutionResult, ()> {
         let cdepth = self.current_depth.get();
-        for i in 0..=cdepth {
-            if self.defineds.borrow()[(cdepth - i) as usize].contains_key(&name) {
-                let s = self
-                    .defineds
+        let current_name = {
+            let rf = self.defineds.borrow();
+            rf[cdepth as usize].get(&name).cloned()
+        };
+        if let Some((r, target_depth)) = current_name {
+            for i in target_depth..=(cdepth as i32) {
+                self.defineds
                     .borrow_mut()
-                    .get_mut((cdepth - i) as usize)
+                    .get_mut(i as usize)
                     .unwrap()
-                    .insert(name, result);
-                return if let Some(s) = s { Ok(s) } else { Err(()) };
+                    .insert(name.clone(), (result.clone(), target_depth));
             }
+            Ok(r)
+        } else {
+            Err(())
         }
-        Err(())
     }
 
     fn get_embedded_func_names() -> HashMap<String, ExecutionResult> {
@@ -986,10 +979,10 @@ fn test_list() {
             ExecutionResult::List(List::Nil),
         )),
     );
-    assert_eq!(true, cons.is_list());
+    assert!(cons.is_list());
 
     let cons = List::cons(ExecutionResult::List(cons), ExecutionResult::Bool(true));
-    assert_eq!(false, cons.is_list());
+    assert!(!cons.is_list());
 
     let vecs = vec![
         ExecutionResult::Number(3),
@@ -998,10 +991,10 @@ fn test_list() {
     ];
 
     let list: List = (vecs.clone(), None).into();
-    assert_eq!(true, list.is_list());
+    assert!(list.is_list());
 
     let not_list: List = (vecs, Some(ExecutionResult::Number(23))).into();
-    assert_eq!(false, not_list.is_list());
+    assert!(!not_list.is_list());
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1249,7 +1242,7 @@ fn test_execute_number_binary_comp() {
     )
     .unwrap();
     if let ExecutionResult::Bool(b) = result {
-        assert_eq!(false, b);
+        assert!(!b);
     } else {
         panic!()
     }

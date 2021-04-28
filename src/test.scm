@@ -14,7 +14,7 @@
                 #f
                 (even? (- n 1))))))
     (display "9999 is even?")
-    (if (even? 9999) (display "Yes") (display "No!"))
+    (if (even? 100000) (display "Yes") (display "No!"))
 )
 
 (display (let loop ((numbers '(3 -2 1 6 -5)) (nonneg '()) (neg '()))
@@ -36,4 +36,7 @@
         ((null? x) sum) 0
     )
 ))
-(display 30)
+(define a 30)
+(display a)
+((lambda (x) (define a 70) (display a) (set! a 50) (display a)) 0)
+(display a)
