@@ -25,7 +25,7 @@ macro_rules! add_embfunc {
 
 #[derive(Clone)]
 pub struct Env {
-    defineds: RefCell<HashMap<u32, HashMap<String, ExecutionResult>>>,
+    defineds: RefCell<Vec<HashMap<String, ExecutionResult>>>,
     overwritten_builtins: RefCell<HashSet<String>>,
     builtins: HashMap<String, ExecutionResult>,
     current_depth: Cell<u32>,
@@ -49,8 +49,7 @@ impl Env {
         let builtins = Self::get_embedded_func_names();
         Self {
             defineds: {
-                let mut map = HashMap::new();
-                map.insert(0, builtins.clone());
+                let map = vec![builtins.clone()];
                 RefCell::new(map)
             },
             current_depth: Cell::new(0),
@@ -67,7 +66,7 @@ impl Env {
         }
         self.defineds
             .borrow_mut()
-            .get_mut(&self.current_depth.get())
+            .get_mut(self.current_depth.get() as usize)
             .unwrap()
             .insert(name, result);
     }
@@ -85,8 +84,8 @@ impl Env {
         }
         let cdepth = self.current_depth.get();
         for i in 0..=cdepth {
-            if self.defineds.borrow()[&(cdepth - i)].contains_key(&name) {
-                let r = self.defineds.borrow()[&(cdepth - i)][&name].clone();
+            if self.defineds.borrow()[(cdepth - i) as usize].contains_key(&name) {
+                let r = self.defineds.borrow()[(cdepth - i) as usize][&name].clone();
                 return Some(r);
             }
         }
@@ -95,13 +94,13 @@ impl Env {
 
     pub fn enter_block(&self) {
         let ndepth = self.current_depth.get() + 1;
-        self.defineds.borrow_mut().insert(ndepth, HashMap::new());
+        self.defineds.borrow_mut().push(HashMap::new());
         self.current_depth.set(ndepth);
     }
 
     pub fn exit_block(&self) {
         let cdepth = self.current_depth.get();
-        self.defineds.borrow_mut().remove(&cdepth);
+        self.defineds.borrow_mut().pop();
         self.current_depth.set(cdepth - 1);
     }
 
@@ -112,11 +111,11 @@ impl Env {
     ) -> Result<ExecutionResult, ()> {
         let cdepth = self.current_depth.get();
         for i in 0..=cdepth {
-            if self.defineds.borrow()[&(cdepth - i)].contains_key(&name) {
+            if self.defineds.borrow()[(cdepth - i) as usize].contains_key(&name) {
                 let s = self
                     .defineds
                     .borrow_mut()
-                    .get_mut(&(cdepth - i))
+                    .get_mut((cdepth - i) as usize)
                     .unwrap()
                     .insert(name, result);
                 return if let Some(s) = s { Ok(s) } else { Err(()) };
