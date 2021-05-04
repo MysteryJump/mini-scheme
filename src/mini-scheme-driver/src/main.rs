@@ -1,15 +1,11 @@
 #![feature(async_closure)]
 
-use std::{
-    env,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
-};
+use std::env;
 use std::{io::Write, process::exit};
 
+use futures_util::future::abortable;
 use mini_scheme::Repl;
+use tokio::select;
 
 #[rustfmt::skip]
 const HELP_TEXT: &str = 
@@ -52,26 +48,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn repl() {
     let mut repl = Repl::new();
-    // let (tx2, rx2) = tokio::sync::mpsc::channel(2);
-    // let rx2 = Arc::new(tokio::sync::Mutex::new(rx2));
-
-    // let call_exit = Arc::new(AtomicBool::new(true));
-    // let in_handler = call_exit.clone();
-
-    // ctrlc::set_handler(move || {
-    //     if in_handler.load(Ordering::SeqCst) {
-    //         exit(0);
-    //     } else {
-    //         #[allow(unused_must_use)]
-    //         tx2.send(());
-    //     }
-    // })
-    // .unwrap();
 
     loop {
-        let (tx1, rx1) = tokio::sync::oneshot::channel();
-        // let rx2 = rx2.clone();
-
         let mut line = String::new();
         print!("> ");
         std::io::stdout().flush().unwrap();
@@ -87,56 +65,46 @@ async fn repl() {
             break;
         }
 
+        let line2 = line.clone();
         let before_repl = repl.clone();
-        // call_exit.store(false, Ordering::SeqCst);
 
-        let mut stream =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap();
-
-        tokio::spawn(async move {
-            tokio::select! {
-                _ = stream.recv() => {
-                    println!("Ctrl+C");
-                    let _ = tx1.send(None);
-                }
-                val = call_repl(repl, line) => {
-                    let _ = tx1.send(Some(val));
-                }
-
+        let repl_block = async move {
+            {
+                call_repl(repl, line2).await
             }
-        });
+        };
 
-        let res = rx1.await.unwrap();
+        let (block, abort_handle) = abortable(repl_block);
+        let ctrlc_block = async move {
+            tokio::signal::ctrl_c().await.unwrap();
+            abort_handle.abort();
+        };
+        let ctrlc_handle = tokio::spawn(ctrlc_block);
+        let repl_handle = tokio::spawn(block);
 
-        if let Some(r) = res {
-            repl = r;
-        } else {
-            repl = before_repl;
-        }
+        repl = tokio::spawn(async move {
+            select! {
+                _ = ctrlc_handle => {
+                    before_repl
+                }
+                repl = repl_handle => {
+                    match repl.unwrap() {
+                        Ok(repl) => repl,
+                        Err(_) => before_repl,
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
 
         unsafe {
             signal_hook_registry::register(signal_hook::consts::SIGINT, || {
                 println!();
                 exit(0);
             })
+            .unwrap();
         }
-        .unwrap();
-
-        // call_exit.store(true, Ordering::SeqCst);
-
-        // repl = std::thread::spawn(move || {
-        //     if line.trim_end() == "#cenv" {
-        //         println!("{:#?}", repl.get_current_env());
-        //     } else {
-        //         let result = repl.execute_line(&line);
-        //         if !result.is_empty() {
-        //             println!("{}", result);
-        //         }
-        //     }
-        //     repl
-        // })
-        // .join()
-        // .unwrap();
     }
 }
 
