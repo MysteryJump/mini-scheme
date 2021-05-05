@@ -9,4 +9,5 @@ edition = "2018"
 [dependencies]
 if_chain = "1"
 uuid = { version = "0.8", features = ["v4"] }
-either = "*"
+either = "1"
+tokio = { version = "1", features = ["full"] }

@@ -3,7 +3,8 @@
 (define z (if #t x y))
 (display z)
 
-(letrec ((even?
+(define-and-run-actor (isEven arg)
+    (letrec ((even?
             (lambda (n)
                 (if (= n 0)
                     #t
@@ -13,9 +14,11 @@
             (if (= n 0)
                 #f
                 (even? (- n 1))))))
-    (display "9999 is even?")
-    (if (even? 100000) (display "Yes") (display "No!"))
+    (if (even? arg) (string-append (number->string arg) " is even from actor?: Yes") (string-append (number->string arg) " is even from actor?: No")))
 )
+
+(define actorId (send-message isEven 500))
+(display actorId)
 
 (display (let loop ((numbers '(3 -2 1 6 -5)) (nonneg '()) (neg '()))
     (cond 
@@ -40,3 +43,17 @@
 (display a)
 ((lambda (x) (define a 70) (display a) (set! a 50) (display a)) 0)
 (display a)
+
+(display (letrec ((even?
+            (lambda (n)
+                (if (= n 0)
+                    #t
+                    (odd? (- n 1)))))
+        (odd?
+            (lambda (n)
+            (if (= n 0)
+                #f
+                (even? (- n 1))))))
+    (if (even? 780) "607 is even from normal?: Yes" "607 is even from normal?: No!"))
+)
+(display (get-result actorId))

@@ -1,11 +1,15 @@
 use std::{
-    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     fmt::Display,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc, Mutex,
+    },
+    thread,
 };
 
 use either::Either;
+use tokio::sync::mpsc::{Receiver, Sender};
 use uuid::Uuid;
 
 use crate::{
@@ -23,22 +27,108 @@ macro_rules! add_embfunc {
     };
 }
 
-#[derive(Clone)]
-pub struct Env {
-    defineds: RefCell<Vec<HashMap<String, (ExecutionResult, i32)>>>,
-    current_depth: Cell<u32>,
-    str_consts_pairs: RefCell<HashMap<String, u128>>,
-    logger: Arc<dyn Fn(String) + Sync + Send>,
+type ActorResult = (u128, Vec<ExecutionResult>);
+
+#[derive(Debug)]
+pub struct Actor {
+    results: Arc<Mutex<HashMap<u128, EResult>>>,
+    name: String,
+    lambda: Expr,
+    receriver: Arc<Mutex<Receiver<ActorResult>>>,
+    interpreter: Arc<Interpreter>,
+    handle: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
-impl std::fmt::Debug for Env {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
-        f.debug_struct("Env")
-            .field("defineds", &self.defineds)
-            .field("current_depth", &self.current_depth)
-            .field("str_consts_pairs", &self.str_consts_pairs)
-            .finish()
+impl Actor {
+    pub fn run(&self) {
+        let receiver = self.receriver.clone();
+        let interpreter = self.interpreter.clone();
+        let lambda = self.lambda.clone();
+        let results = self.results.clone();
+        let handle = thread::spawn(move || {
+            let recver = receiver;
+            {
+                let mut recver = recver.lock().unwrap();
+                while let Some((mes_id, mes_body)) = recver.blocking_recv() {
+                    let result = interpreter.execute_expr(Expr::Apply(
+                        Box::new(lambda.clone()),
+                        mes_body.into_iter().map(|x| x.into()).collect(),
+                    ));
+                    results.lock().unwrap().insert(mes_id, result);
+                }
+            }
+        });
+        self.handle.lock().unwrap().replace(handle);
     }
+
+    pub fn abort(&self) {
+        todo!()
+    }
+
+    pub fn new(
+        name: String,
+        args: Arg,
+        body: Body,
+        current_env: Env,
+    ) -> (Self, Sender<(u128, Vec<ExecutionResult>)>) {
+        let lambda = Expr::Lambda(args, body);
+        let (sender, recvr) = tokio::sync::mpsc::channel(100);
+        (
+            Self {
+                results: Arc::new(Mutex::new(HashMap::new())),
+                name,
+                lambda,
+                interpreter: Arc::new(Interpreter::with_env(current_env)),
+                receriver: Arc::new(Mutex::new(recvr)),
+                handle: Mutex::new(None),
+            },
+            sender,
+        )
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct ActorMap {
+    pub map: HashMap<String, (Actor, Sender<ActorResult>)>,
+    pub message_id_name_pairs: Mutex<HashMap<u128, String>>,
+}
+
+impl ActorMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn define_and_run(&mut self, actor: Actor, sender: Sender<ActorResult>) {
+        actor.run();
+        self.map.insert(actor.name.clone(), (actor, sender));
+    }
+
+    pub fn abort(&self, name: String) {
+        self.map[&name].0.abort();
+    }
+
+    pub fn send_message(&self, name: String, message: Vec<ExecutionResult>) -> u128 {
+        let uuid = Uuid::new_v4().as_u128();
+        self.map[&name].1.blocking_send((uuid, message)).unwrap();
+        self.message_id_name_pairs
+            .lock()
+            .unwrap()
+            .insert(uuid, name);
+        uuid
+    }
+
+    pub fn get_result(&self, id: u128) -> Option<EResult> {
+        let name = &self.message_id_name_pairs.lock().unwrap()[&id];
+        let r = self.map[name].0.results.lock().unwrap().get(&id).cloned();
+        r
+    }
+}
+
+pub struct Env {
+    defineds: Mutex<Vec<HashMap<String, (ExecutionResult, i32)>>>,
+    current_depth: AtomicU32,
+    str_consts_pairs: Mutex<HashMap<String, u128>>,
+    logger: Arc<dyn Fn(String) + Sync + Send>,
 }
 
 impl Env {
@@ -50,18 +140,19 @@ impl Env {
                     .iter()
                     .map(|x| (x.0.clone(), (x.1.clone(), 0)))
                     .collect()];
-                RefCell::new(map)
+                Mutex::new(map)
             },
-            current_depth: Cell::new(0),
-            str_consts_pairs: RefCell::new(HashMap::new()),
+            current_depth: AtomicU32::new(0),
+            str_consts_pairs: Mutex::new(HashMap::new()),
             logger,
         }
     }
 
     pub fn add_define(&self, name: String, result: ExecutionResult) {
-        let cdepth = self.current_depth.get();
+        let cdepth = self.current_depth.load(Ordering::SeqCst);
         self.defineds
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .get_mut(cdepth as usize)
             .unwrap()
             .insert(name, (result, cdepth as i32));
@@ -74,23 +165,23 @@ impl Env {
     }
 
     pub fn get_expr_by_def_name(&self, name: String) -> Option<ExecutionResult> {
-        let cdepth = self.current_depth.get();
+        let cdepth = self.current_depth.load(Ordering::SeqCst);
 
-        let rf = self.defineds.borrow();
+        let rf = self.defineds.lock().unwrap();
         rf[cdepth as usize].get(&name).cloned().map(|x| x.0)
     }
 
     pub fn enter_block(&self) {
-        let ndepth = self.current_depth.get() + 1;
-        let next = self.defineds.borrow().last().unwrap().clone();
-        self.defineds.borrow_mut().push(next);
-        self.current_depth.set(ndepth);
+        let ndepth = self.current_depth.load(Ordering::SeqCst) + 1;
+        let next = self.defineds.lock().unwrap().last().unwrap().clone();
+        self.defineds.lock().unwrap().push(next);
+        self.current_depth.store(ndepth, Ordering::SeqCst);
     }
 
     pub fn exit_block(&self) {
-        let cdepth = self.current_depth.get();
-        self.defineds.borrow_mut().pop();
-        self.current_depth.set(cdepth - 1);
+        let cdepth = self.current_depth.load(Ordering::SeqCst);
+        self.defineds.lock().unwrap().pop();
+        self.current_depth.store(cdepth - 1, Ordering::SeqCst);
     }
 
     pub fn update_entry(
@@ -98,15 +189,16 @@ impl Env {
         name: String,
         result: ExecutionResult,
     ) -> Result<ExecutionResult, ()> {
-        let cdepth = self.current_depth.get();
+        let cdepth = self.current_depth.load(Ordering::SeqCst);
         let current_name = {
-            let rf = self.defineds.borrow();
+            let rf = self.defineds.lock().unwrap();
             rf[cdepth as usize].get(&name).cloned()
         };
         if let Some((r, target_depth)) = current_name {
             for i in target_depth..=(cdepth as i32) {
                 self.defineds
-                    .borrow_mut()
+                    .lock()
+                    .unwrap()
                     .get_mut(i as usize)
                     .unwrap()
                     .insert(name.clone(), (result.clone(), target_depth));
@@ -140,16 +232,41 @@ impl Env {
         add_embfunc!(map, "equal?");
         add_embfunc!(map, "load");
         add_embfunc!(map, "display");
+        add_embfunc!(map, "sleep");
+        add_embfunc!(map, "send-message");
+        add_embfunc!(map, "get-result");
         map
     }
 
     pub fn get_const_str_addr(&self, name: String) -> u128 {
-        if self.str_consts_pairs.borrow().contains_key(&name) {
-            self.str_consts_pairs.borrow()[&name]
+        #[allow(clippy::map_entry)]
+        if self.str_consts_pairs.lock().unwrap().contains_key(&name) {
+            self.str_consts_pairs.lock().unwrap()[&name]
         } else {
             let addr = Uuid::new_v4().as_u128();
-            self.str_consts_pairs.borrow_mut().insert(name, addr);
+            self.str_consts_pairs.lock().unwrap().insert(name, addr);
             addr
+        }
+    }
+}
+
+impl std::fmt::Debug for Env {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
+        f.debug_struct("Env")
+            .field("defineds", &self.defineds)
+            .field("current_depth", &self.current_depth)
+            .field("str_consts_pairs", &self.str_consts_pairs)
+            .finish()
+    }
+}
+
+impl Clone for Env {
+    fn clone(&self) -> Self {
+        Self {
+            defineds: Mutex::new(self.defineds.lock().unwrap().clone()),
+            current_depth: AtomicU32::new(self.current_depth.load(Ordering::SeqCst)),
+            str_consts_pairs: Mutex::new(self.str_consts_pairs.lock().unwrap().clone()),
+            logger: self.logger.clone(),
         }
     }
 }
@@ -157,27 +274,41 @@ impl Env {
 #[derive(Debug)]
 pub struct Interpreter {
     env: Env,
+    actor_map: ActorMap,
 }
 
 impl Interpreter {
     pub fn new(logger: Arc<dyn Fn(String) + Sync + Send>) -> Self {
         Self {
             env: Env::new(logger),
+            actor_map: ActorMap::new(),
         }
     }
 
     pub fn with_env(env: Env) -> Self {
-        Self { env }
+        Self {
+            env,
+            actor_map: ActorMap::new(),
+        }
     }
 
     pub fn get_env(self) -> Env {
         self.env
     }
 
-    pub fn execute_toplevel(&self, toplevel: TopLevel) -> Either<EResult, Vec<EResult>> {
+    pub fn execute_toplevel(&mut self, toplevel: TopLevel) -> Either<EResult, Vec<EResult>> {
         match toplevel {
             TopLevel::Expr(e) => Either::Left(self.execute_expr(e)),
             TopLevel::Define(def) => Either::Left(self.execute_define(def)),
+            TopLevel::DefineActor((name, args, rest_arg), body) => {
+                #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                return Either::Left(Err("Unsupported feature usage in this platform."));
+
+                let (actor, sender) =
+                    Actor::new(name, Arg::IdList(args, rest_arg), body, self.env.clone());
+                self.actor_map.define_and_run(actor, sender);
+                Either::Left(Ok(ExecutionResult::Unit))
+            }
             TopLevel::Load(path) => {
                 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
                 return Either::Left(Err("Unsupported function usage in this platform."));
@@ -304,12 +435,38 @@ impl Interpreter {
                                 }
                             }
                         },
+                        ExecutionResult::EmbeddedFunc("send-message") => {
+                            if arg_apply.is_empty() {
+                                Err("the number of arguments needs 1 at least".to_string())
+                            } else if let Expr::Id(id) = arg_apply.first().unwrap() {
+                                let evaleds = arg_apply
+                                    .iter()
+                                    .skip(1)
+                                    .map(|x| self.execute_expr(x.clone()))
+                                    .collect::<Result<Vec<_>, _>>()?;
+
+                                let id = self.actor_map.send_message(id.to_string(), evaleds);
+                                Ok(ExecutionResult::ActorResultId(id))
+                            } else {
+                                Err("the first argument needs id".to_string())
+                            }
+                        }
+                        ExecutionResult::EmbeddedFunc("stop-actor") => {
+                            if arg_apply.is_empty() {
+                                Err("the number of arguments needs 1 at least".to_string())
+                            } else if let Expr::Id(id) = arg_apply.first().unwrap() {
+                                self.actor_map.abort(id.to_string());
+                                Ok(ExecutionResult::Unit)
+                            } else {
+                                Err("the first argument needs id".to_string())
+                            }
+                        }
                         ExecutionResult::EmbeddedFunc(name) => {
                             let evaleds = arg_apply
                                 .iter()
                                 .map(|x| self.execute_expr(x.clone()))
                                 .collect::<Result<Vec<_>, _>>()?;
-                            match &name as &str {
+                            match name {
                                 "+" => execute_number_binary_operation(NumOpKind::Add, &evaleds),
                                 "-" => execute_number_binary_operation(NumOpKind::Sub, &evaleds),
                                 "/" => execute_number_binary_operation(NumOpKind::Div, &evaleds),
@@ -396,6 +553,52 @@ impl Interpreter {
                                     } else {
                                         (*self.env.logger.clone())(evaleds[0].to_string());
                                         Ok(ExecutionResult::Unit)
+                                    }
+                                }
+                                "sleep" => {
+                                    if evaleds.is_empty() {
+                                        std::thread::sleep(std::time::Duration::from_millis(1000));
+                                        Ok(ExecutionResult::Unit)
+                                    } else if let ExecutionResult::Number(n) = &evaleds[0] {
+                                        std::thread::sleep(std::time::Duration::from_millis(
+                                            *n as u64,
+                                        ));
+                                        Ok(ExecutionResult::Unit)
+                                    } else {
+                                        Err("the number of argument needs 1 or 0 and first-argument needs number?".to_string())
+                                    }
+                                }
+                                "get-result" => {
+                                    if evaleds.is_empty() {
+                                        Err("the number of argument needs 1 and first-argument needs actor_id?".to_string())
+                                    } else if let ExecutionResult::ActorResultId(id) = &evaleds[0] {
+                                        let result = self.actor_map.get_result(*id);
+                                        match result {
+                                            Some(r) => r,
+                                            None => Ok(ExecutionResult::Unit),
+                                        }
+                                    } else {
+                                        Err("the number of argument needs 1 and first-argument needs actor_id?".to_string())
+                                    }
+                                }
+                                "actor-id" => {
+                                    if evaleds.len() != 1
+                                        || matches!(&evaleds[0], ExecutionResult::String(_, _))
+                                    {
+                                        Err("the number of argument needs 1 or 0 and first-argument needs string?".to_string())
+                                    } else {
+                                        let s = if let ExecutionResult::String(s, _) = &evaleds[0] {
+                                            s
+                                        } else {
+                                            panic!()
+                                        };
+                                        match s.parse() {
+                                            Ok(o) => Ok(ExecutionResult::ActorResultId(o)),
+                                            Err(_) => {
+                                                Err("cannot parse string to u128 number"
+                                                    .to_string())
+                                            }
+                                        }
                                     }
                                 }
                                 _ => todo!(),
@@ -666,6 +869,7 @@ impl Interpreter {
 #[derive(Debug, Clone)]
 pub enum ExecutionResult {
     Number(i64),
+    ActorResultId(u128),
     String(String, u128),
     Bool(bool),
     Symbol(String),
@@ -693,6 +897,9 @@ impl ExecutionResult {
             ExecutionResult::Unit => matches!(other, ExecutionResult::Unit),
             ExecutionResult::EmbeddedFunc(e) => {
                 matches!(other, ExecutionResult::EmbeddedFunc(ee) if e == ee)
+            }
+            ExecutionResult::ActorResultId(r) => {
+                matches!(other, ExecutionResult::ActorResultId(rr) if r == rr)
             }
             ExecutionResult::Undefined => false,
         }
@@ -726,7 +933,29 @@ impl ExecutionResult {
             ExecutionResult::EmbeddedFunc(name) => {
                 matches!(other, ExecutionResult::EmbeddedFunc(name2) if name == name2)
             }
+            ExecutionResult::ActorResultId(r) => {
+                matches!(other, ExecutionResult::ActorResultId(rr) if r == rr)
+            }
             ExecutionResult::Undefined => false,
+        }
+    }
+}
+
+impl From<ExecutionResult> for Expr {
+    fn from(er: ExecutionResult) -> Self {
+        match er {
+            ExecutionResult::Number(n) => Expr::Const(n.into()),
+            ExecutionResult::String(s, _) => Expr::Const(s.into()),
+            ExecutionResult::Bool(b) => Expr::Const(b.into()),
+            ExecutionResult::Symbol(s) => Expr::Quote(SExpr::Const(s.into())),
+            ExecutionResult::Func(arg, body, _) => Expr::Lambda(arg, body),
+            ExecutionResult::List(_) => todo!(),
+            ExecutionResult::Unit => Expr::Const(().into()),
+            ExecutionResult::EmbeddedFunc(s) => Expr::Id(s.to_string()),
+            ExecutionResult::Undefined => panic!(),
+            ExecutionResult::ActorResultId(_) => {
+                panic!();
+            }
         }
     }
 }
@@ -755,6 +984,7 @@ impl Display for ExecutionResult {
             ExecutionResult::List(l) => write!(f, "{}", l),
             ExecutionResult::EmbeddedFunc(_) => write!(f, "#<procedure>"),
             ExecutionResult::Undefined => write!(f, "undefined"),
+            ExecutionResult::ActorResultId(r) => write!(f, "#<actor_result:{}>", r),
         }
     }
 }

@@ -25,7 +25,7 @@ pub fn execute(source: &str) -> Vec<Result<String, String>> {
     // );
     let mut results = Vec::new();
     let parser = Parser::new(lexed);
-    let interpreter = Interpreter::new(Arc::new(|x| println!("{}", x)));
+    let mut interpreter = Interpreter::new(Arc::new(|x| println!("{}", x)));
     while let Some(pp) = parser.parse_toplevel() {
         match interpreter.execute_toplevel(pp) {
             Either::Left(result) => {
@@ -56,7 +56,7 @@ impl Repl {
         let parser = Parser::new(lexed);
 
         if let Some(pp) = parser.parse_toplevel() {
-            let interpreter = Interpreter::with_env(self.current_env.clone());
+            let mut interpreter = Interpreter::with_env(self.current_env.clone());
             let str = match interpreter.execute_toplevel(pp) {
                 Either::Left(result) => match result {
                     Ok(r) => r.to_string(),
@@ -107,7 +107,7 @@ impl Executer {
     pub fn new(lines: String) -> Result<Self, String> {
         let lexed = lexer::lex(&lines);
         let parser = Parser::new(lexed);
-        let interpreter = Interpreter::new(Arc::new(|x| println!("{}", x)));
+        let mut interpreter = Interpreter::new(Arc::new(|x| println!("{}", x)));
         while let Some(pp) = parser.parse_toplevel() {
             interpreter.execute_toplevel(pp);
         }
@@ -116,7 +116,7 @@ impl Executer {
     }
 
     pub fn execute_func(
-        &self,
+        &mut self,
         name: &str,
         args: Vec<Box<dyn AsArg>>,
     ) -> Result<Either<ExecutionResult, Vec<ExecutionResult>>, String> {
@@ -182,7 +182,7 @@ impl AsArg for Vec<Box<dyn AsArg>> {
 
 #[test]
 fn test_list_func() {
-    let exec = Executer::new("(define (x y) y)".to_string()).unwrap();
+    let mut exec = Executer::new("(define (x y) y)".to_string()).unwrap();
     let inner_inner: Vec<Box<dyn AsArg>> = vec![Box::new(23)];
     let list_inner: Vec<Box<dyn AsArg>> = vec![
         Box::new("30"),

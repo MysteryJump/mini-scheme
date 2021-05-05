@@ -93,6 +93,10 @@ impl Parser {
                         TokenKind::Ident(x) if x == "define" => {
                             TopLevel::Define(self.parse_define())
                         }
+                        TokenKind::Ident(x) if x == "define-and-run-actor" => {
+                            let result = self.parse_define_actor();
+                            TopLevel::DefineActor(result.0, result.1)
+                        }
                         _ if self.is_next_first_of_expr() => TopLevel::Expr(self.parse_expr()),
                         _ => panic!(),
                     },
@@ -422,6 +426,68 @@ impl Parser {
                 let expr = self.parse_expr();
                 self.eat_close().unwrap();
                 Define::Define(id, expr)
+            }
+            _ => {
+                panic!();
+            }
+        }
+    }
+
+    fn parse_define_actor(&self) -> ((String, Vec<String>, Option<String>), Body) {
+        self.tokens.eat(TokenKind::OpenParen).then_some(0).unwrap();
+        self.tokens
+            .eat(TokenKind::Ident("define-and-run-actor".to_string()))
+            .then_some(0)
+            .unwrap();
+        match self.tokens.next().unwrap().kind {
+            TokenKind::OpenParen => {
+                let mut ids = Vec::new();
+                let mut doted = false;
+                loop {
+                    match self.tokens.next().unwrap().kind {
+                        TokenKind::CloseParen => break,
+                        TokenKind::Dot => {
+                            doted = true;
+                            break;
+                        }
+                        TokenKind::Ident(id) => {
+                            ids.push(id);
+                        }
+                        _ => panic!(),
+                    }
+                }
+
+                if ids.is_empty() {
+                    panic!()
+                }
+                let name = {
+                    let n = ids[0].clone();
+                    ids = (&ids[1..]).to_vec();
+                    n
+                };
+                let ids = (
+                    name,
+                    ids,
+                    if doted {
+                        if let TokenKind::Ident(id) = self.tokens.next().unwrap().kind {
+                            self.tokens.eat(TokenKind::CloseParen).then_some(0).unwrap();
+                            Some(id)
+                        } else {
+                            panic!()
+                        }
+                    } else {
+                        None
+                    },
+                );
+                let body = if self.is_next_first_of_define() || self.is_next_first_of_expr() {
+                    let b = self.parse_body();
+                    self.eat_close().unwrap();
+                    b
+                } else {
+                    panic!()
+                };
+
+                (ids, body)
             }
             _ => {
                 panic!();

@@ -13,8 +13,7 @@ r#"Usage: mins [options] [file]
 Options:
     --repl, -r  REPL mode"#;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = env::args().skip(1).collect::<Vec<_>>();
     let mut is_repl = false;
     let mut is_help = false;
@@ -33,7 +32,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if is_repl {
-        repl().await;
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            repl().await;
+        });
     } else if is_help {
         println!("{}", HELP_TEXT);
     } else if is_debug {

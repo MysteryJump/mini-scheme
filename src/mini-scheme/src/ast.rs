@@ -4,6 +4,7 @@ use std::fmt::Display;
 pub enum TopLevel {
     Expr(Expr),
     Define(Define),
+    DefineActor((String, Vec<String>, Option<String>), Body),
     Load(String),
 }
 
