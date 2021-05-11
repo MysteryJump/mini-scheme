@@ -42,6 +42,9 @@ pub struct Actor {
 
 impl Actor {
     pub fn run(&self) {
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        panic!();
+
         let receiver = self.receriver.clone();
         let interpreter = self.interpreter.clone();
         let lambda = self.lambda.clone();
