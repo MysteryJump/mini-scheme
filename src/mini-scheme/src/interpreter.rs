@@ -71,6 +71,7 @@ impl Actor {
         args: Arg,
         body: Body,
         current_env: Env,
+        actor_map: Arc<Mutex<ActorMap>>,
     ) -> (Self, Sender<(u128, Vec<ExecutionResult>)>) {
         let lambda = Expr::Lambda(args, body);
         let (sender, recvr) = tokio::sync::mpsc::channel(100);
@@ -79,7 +80,7 @@ impl Actor {
                 results: Arc::new(Mutex::new(HashMap::new())),
                 name,
                 lambda,
-                interpreter: Arc::new(Interpreter::with_env(current_env)),
+                interpreter: Arc::new(Interpreter::with_env_and_actor_map(current_env, actor_map)),
                 receriver: Arc::new(Mutex::new(recvr)),
                 handle: Mutex::new(None),
             },
@@ -276,22 +277,26 @@ impl Clone for Env {
 #[derive(Debug)]
 pub struct Interpreter {
     env: Env,
-    actor_map: ActorMap,
+    actor_map: Arc<Mutex<ActorMap>>,
 }
 
 impl Interpreter {
     pub fn new(logger: Arc<dyn Fn(String) + Sync + Send>) -> Self {
         Self {
             env: Env::new(logger),
-            actor_map: ActorMap::new(),
+            actor_map: Arc::new(Mutex::new(ActorMap::new())),
         }
     }
 
     pub fn with_env(env: Env) -> Self {
         Self {
             env,
-            actor_map: ActorMap::new(),
+            actor_map: Arc::new(Mutex::new(ActorMap::new())),
         }
+    }
+
+    pub fn with_env_and_actor_map(env: Env, actor_map: Arc<Mutex<ActorMap>>) -> Self {
+        Self { env, actor_map }
     }
 
     pub fn get_env(self) -> Env {
@@ -306,9 +311,14 @@ impl Interpreter {
                 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
                 return Either::Left(Err("Unsupported feature usage in this platform."));
 
-                let (actor, sender) =
-                    Actor::new(name, Arg::IdList(args, rest_arg), body, self.env.clone());
-                self.actor_map.define_and_run(actor, sender);
+                let (actor, sender) = Actor::new(
+                    name,
+                    Arg::IdList(args, rest_arg),
+                    body,
+                    self.env.clone(),
+                    self.actor_map.clone(),
+                );
+                self.actor_map.lock().unwrap().define_and_run(actor, sender);
                 Either::Left(Ok(ExecutionResult::Unit))
             }
             TopLevel::Load(path) => {
@@ -447,7 +457,11 @@ impl Interpreter {
                                     .map(|x| self.execute_expr(x.clone()))
                                     .collect::<Result<Vec<_>, _>>()?;
 
-                                let id = self.actor_map.send_message(id.to_string(), evaleds);
+                                let id = self
+                                    .actor_map
+                                    .lock()
+                                    .unwrap()
+                                    .send_message(id.to_string(), evaleds);
                                 Ok(ExecutionResult::ActorResultId(id))
                             } else {
                                 Err("the first argument needs id".to_string())
@@ -457,7 +471,7 @@ impl Interpreter {
                             if arg_apply.is_empty() {
                                 Err("the number of arguments needs 1 at least".to_string())
                             } else if let Expr::Id(id) = arg_apply.first().unwrap() {
-                                self.actor_map.abort(id.to_string());
+                                self.actor_map.lock().unwrap().abort(id.to_string());
                                 Ok(ExecutionResult::Unit)
                             } else {
                                 Err("the first argument needs id".to_string())
@@ -574,7 +588,7 @@ impl Interpreter {
                                     if evaleds.is_empty() {
                                         Err("the number of argument needs 1 and first-argument needs actor_id?".to_string())
                                     } else if let ExecutionResult::ActorResultId(id) = &evaleds[0] {
-                                        let result = self.actor_map.get_result(*id);
+                                        let result = self.actor_map.lock().unwrap().get_result(*id);
                                         match result {
                                             Some(r) => r,
                                             None => Ok(ExecutionResult::Unit),
@@ -590,7 +604,8 @@ impl Interpreter {
                                     } else if let ExecutionResult::ActorResultId(id) = &evaleds[0] {
                                         let result;
                                         loop {
-                                            let current = self.actor_map.get_result(*id);
+                                            let current =
+                                                self.actor_map.lock().unwrap().get_result(*id);
                                             match current {
                                                 Some(Ok(r))
                                                     if !matches!(r, ExecutionResult::Unit) =>

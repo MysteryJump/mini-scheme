@@ -3,6 +3,10 @@
 (define z (if #t x y))
 (display z)
 
+(define-and-run-actor (getText num result) 
+    (if result (string-append (number->string num) " is even from actor?: Yes") (string-append (number->string num) " is even from actor?: No"))
+)
+
 (define-and-run-actor (isEven arg)
     (letrec ((even?
             (lambda (n)
@@ -14,7 +18,13 @@
             (if (= n 0)
                 #f
                 (even? (- n 1))))))
+    (display (await (send-message getText arg (even? arg))))
     (if (even? arg) (string-append (number->string arg) " is even from actor?: Yes") (string-append (number->string arg) " is even from actor?: No")))
+)
+
+(define-and-run-actor (getTextTest num)
+    (display (await (send-message isEven (+ num 12))))
+    0
 )
 
 (define actorId (send-message isEven 50000))
@@ -56,4 +66,5 @@
                 (even? (- n 1))))))
     (if (even? 780) "607 is even from normal?: Yes" "607 is even from normal?: No!"))
 )
+(await (send-message getTextTest 2001))
 (display (await actorId))
