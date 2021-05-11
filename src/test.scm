@@ -17,7 +17,7 @@
     (if (even? arg) (string-append (number->string arg) " is even from actor?: Yes") (string-append (number->string arg) " is even from actor?: No")))
 )
 
-(define actorId (send-message isEven 500))
+(define actorId (send-message isEven 50000))
 (display actorId)
 
 (display (let loop ((numbers '(3 -2 1 6 -5)) (nonneg '()) (neg '()))
@@ -56,4 +56,4 @@
                 (even? (- n 1))))))
     (if (even? 780) "607 is even from normal?: Yes" "607 is even from normal?: No!"))
 )
-(display (get-result actorId))
+(display (await actorId))

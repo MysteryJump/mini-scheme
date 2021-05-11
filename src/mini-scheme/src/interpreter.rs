@@ -6,6 +6,7 @@ use std::{
         Arc, Mutex,
     },
     thread,
+    time::Duration,
 };
 
 use either::Either;
@@ -233,8 +234,9 @@ impl Env {
         add_embfunc!(map, "load");
         add_embfunc!(map, "display");
         add_embfunc!(map, "sleep");
-        add_embfunc!(map, "send-message");
-        add_embfunc!(map, "get-result");
+
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        add_embfunc!(map, "send-message", "get-result", "await");
         map
     }
 
@@ -577,6 +579,32 @@ impl Interpreter {
                                             Some(r) => r,
                                             None => Ok(ExecutionResult::Unit),
                                         }
+                                    } else {
+                                        Err("the number of argument needs 1 and first-argument needs actor_id?".to_string())
+                                    }
+                                }
+                                // TODO: multiple await
+                                "await" => {
+                                    if evaleds.is_empty() {
+                                        Err("the number of argument needs 1 and first-argument needs actor_id?".to_string())
+                                    } else if let ExecutionResult::ActorResultId(id) = &evaleds[0] {
+                                        let result;
+                                        loop {
+                                            let current = self.actor_map.get_result(*id);
+                                            match current {
+                                                Some(Ok(r))
+                                                    if !matches!(r, ExecutionResult::Unit) =>
+                                                {
+                                                    result = r;
+                                                    break;
+                                                }
+                                                Some(Err(e)) => return Err(e),
+                                                _ => {
+                                                    thread::sleep(Duration::from_millis(10));
+                                                }
+                                            }
+                                        }
+                                        Ok(result)
                                     } else {
                                         Err("the number of argument needs 1 and first-argument needs actor_id?".to_string())
                                     }
