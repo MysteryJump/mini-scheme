@@ -1,6 +1,6 @@
 #![feature(bool_to_option)]
 
-use std::sync::Arc;
+use std::sync::{atomic::AtomicBool, Arc};
 
 use either::Either;
 use interpreter::{Env, ExecutionResult, Interpreter};
@@ -25,7 +25,7 @@ pub fn execute(source: &str) -> Vec<Result<String, String>> {
     // );
     let mut results = Vec::new();
     let parser = Parser::new(lexed);
-    let mut interpreter = Interpreter::new(Arc::new(|x| println!("{}", x)));
+    let mut interpreter = Interpreter::new(Arc::new(|x| println!("{}", x)), None);
     while let Some(pp) = parser.parse_toplevel() {
         match interpreter.execute_toplevel(pp) {
             Either::Left(result) => {
@@ -42,12 +42,15 @@ pub fn execute(source: &str) -> Vec<Result<String, String>> {
 #[derive(Clone)]
 pub struct Repl {
     current_env: Env,
+    pub cancellation_token: Arc<AtomicBool>,
 }
 
 impl Repl {
     pub fn new() -> Self {
+        let token = Arc::new(AtomicBool::new(false));
         Self {
-            current_env: Env::new(Arc::new(|x| println!("{}", x))),
+            current_env: Env::new(Arc::new(|x| println!("{}", x)), Some(token.clone())),
+            cancellation_token: token,
         }
     }
 
@@ -104,10 +107,10 @@ pub struct Executer {
 }
 
 impl Executer {
-    pub fn new(lines: String) -> Result<Self, String> {
-        let lexed = lexer::lex(&lines);
+    pub fn new(lines: &str) -> Result<Self, String> {
+        let lexed = lexer::lex(lines);
         let parser = Parser::new(lexed);
-        let mut interpreter = Interpreter::new(Arc::new(|x| println!("{}", x)));
+        let mut interpreter = Interpreter::new(Arc::new(|x| println!("{}", x)), None);
         while let Some(pp) = parser.parse_toplevel() {
             interpreter.execute_toplevel(pp);
         }
@@ -182,7 +185,7 @@ impl AsArg for Vec<Box<dyn AsArg>> {
 
 #[test]
 fn test_list_func() {
-    let mut exec = Executer::new("(define (x y) y)".to_string()).unwrap();
+    let mut exec = Executer::new("(define (x y) y)").unwrap();
     let inner_inner: Vec<Box<dyn AsArg>> = vec![Box::new(23)];
     let list_inner: Vec<Box<dyn AsArg>> = vec![
         Box::new("30"),

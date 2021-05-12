@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
     sync::{
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, Mutex,
     },
     thread,
@@ -134,10 +134,14 @@ pub struct Env {
     current_depth: AtomicU32,
     str_consts_pairs: Mutex<HashMap<String, u128>>,
     logger: Arc<dyn Fn(String) + Sync + Send>,
+    cancellation_token: Option<Arc<AtomicBool>>,
 }
 
 impl Env {
-    pub fn new(logger: Arc<dyn Fn(String) + Sync + Send>) -> Self {
+    pub fn new(
+        logger: Arc<dyn Fn(String) + Sync + Send>,
+        cancellation_token: Option<Arc<AtomicBool>>,
+    ) -> Self {
         let builtins = Self::get_embedded_func_names();
         Self {
             defineds: {
@@ -150,6 +154,7 @@ impl Env {
             current_depth: AtomicU32::new(0),
             str_consts_pairs: Mutex::new(HashMap::new()),
             logger,
+            cancellation_token,
         }
     }
 
@@ -273,6 +278,7 @@ impl Clone for Env {
             current_depth: AtomicU32::new(self.current_depth.load(Ordering::SeqCst)),
             str_consts_pairs: Mutex::new(self.str_consts_pairs.lock().unwrap().clone()),
             logger: self.logger.clone(),
+            cancellation_token: self.cancellation_token.clone(),
         }
     }
 }
@@ -284,9 +290,12 @@ pub struct Interpreter {
 }
 
 impl Interpreter {
-    pub fn new(logger: Arc<dyn Fn(String) + Sync + Send>) -> Self {
+    pub fn new(
+        logger: Arc<dyn Fn(String) + Sync + Send>,
+        cancellation_token: Option<Arc<AtomicBool>>,
+    ) -> Self {
         Self {
-            env: Env::new(logger),
+            env: Env::new(logger, cancellation_token),
             actor_map: Arc::new(Mutex::new(ActorMap::new())),
         }
     }
@@ -357,6 +366,12 @@ impl Interpreter {
     fn execute_expr(&self, mut expr: Expr) -> EResult {
         let mut tail_depth = 0;
         loop {
+            if let Some(tk) = self.env.cancellation_token.as_ref() {
+                if tk.load(Ordering::Relaxed) {
+                    tk.store(false, Ordering::SeqCst);
+                    return Err("Interrupted by user".to_string());
+                }
+            }
             let r = match &expr {
                 Expr::Const(c) => Ok(c.clone().into_with_env(&self.env)),
                 Expr::Id(id) => self

@@ -50,6 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn repl() {
     let mut repl = Repl::new();
+    let mut sig_id = None;
 
     loop {
         let mut line = String::new();
@@ -69,6 +70,7 @@ async fn repl() {
 
         let line2 = line.clone();
         let before_repl = repl.clone();
+        let canc_tk = repl.cancellation_token.clone();
 
         let repl_block = async move {
             {
@@ -78,8 +80,12 @@ async fn repl() {
 
         let (block, abort_handle) = abortable(repl_block);
         let ctrlc_block = async move {
+            if let Some(sig_id) = sig_id {
+                signal_hook_registry::unregister(sig_id);
+            }
             tokio::signal::ctrl_c().await.unwrap();
             abort_handle.abort();
+            canc_tk.store(true, std::sync::atomic::Ordering::SeqCst);
         };
         let ctrlc_handle = tokio::spawn(ctrlc_block);
         let repl_handle = tokio::spawn(block);
@@ -101,11 +107,13 @@ async fn repl() {
         .unwrap();
 
         unsafe {
-            signal_hook_registry::register(signal_hook::consts::SIGINT, || {
-                println!();
-                exit(0);
-            })
-            .unwrap();
+            sig_id = Some(
+                signal_hook_registry::register(signal_hook::consts::SIGINT, || {
+                    println!();
+                    exit(0);
+                })
+                .unwrap(),
+            );
         }
     }
 }
