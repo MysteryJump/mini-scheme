@@ -1,0 +1,25 @@
+{
+  "files": {
+    "main.css": "/mini-scheme/static/css/main.7411a394.chunk.css",
+    "main.js": "/mini-scheme/static/js/main.c7034f19.chunk.js",
+    "main.js.map": "/mini-scheme/static/js/main.c7034f19.chunk.js.map",
+    "runtime-main.js": "/mini-scheme/static/js/runtime-main.b21080a3.js",
+    "runtime-main.js.map": "/mini-scheme/static/js/runtime-main.b21080a3.js.map",
+    "static/js/2.63b2a1b9.chunk.js": "/mini-scheme/static/js/2.63b2a1b9.chunk.js",
+    "static/js/2.63b2a1b9.chunk.js.map": "/mini-scheme/static/js/2.63b2a1b9.chunk.js.map",
+    "static/js/3.7b3bd76b.chunk.js": "/mini-scheme/static/js/3.7b3bd76b.chunk.js",
+    "7239456d88c275ca8616.module.wasm": "/mini-scheme/7239456d88c275ca8616.module.wasm",
+    "static/js/3.7b3bd76b.chunk.js.map": "/mini-scheme/static/js/3.7b3bd76b.chunk.js.map",
+    "static/js/4.23e95c71.chunk.js": "/mini-scheme/static/js/4.23e95c71.chunk.js",
+    "static/js/4.23e95c71.chunk.js.map": "/mini-scheme/static/js/4.23e95c71.chunk.js.map",
+    "index.html": "/mini-scheme/index.html",
+    "static/css/main.7411a394.chunk.css.map": "/mini-scheme/static/css/main.7411a394.chunk.css.map",
+    "static/js/2.63b2a1b9.chunk.js.LICENSE.txt": "/mini-scheme/static/js/2.63b2a1b9.chunk.js.LICENSE.txt"
+  },
+  "entrypoints": [
+    "static/js/runtime-main.b21080a3.js",
+    "static/js/2.63b2a1b9.chunk.js",
+    "static/css/main.7411a394.chunk.css",
+    "static/js/main.c7034f19.chunk.js"
+  ]
+}
