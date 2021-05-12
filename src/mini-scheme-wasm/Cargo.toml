@@ -1,0 +1,15 @@
+[package]
+name = "mini-scheme-wasm"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+mini-scheme = { path = "../mini-scheme" }
+once_cell = "1"
+getrandom = { version = "0.2", features = ["js"] }

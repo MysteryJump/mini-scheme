@@ -1,6 +1,6 @@
 #![feature(async_closure)]
 
-use std::env;
+use std::{env, sync::Arc};
 use std::{io::Write, process::exit};
 
 use futures_util::future::abortable;
@@ -41,7 +41,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else if is_debug {
         do_debug();
     } else if let Some(path) = path {
-        mini_scheme::execute(&std::fs::read_to_string(path).unwrap());
+        mini_scheme::execute(
+            &std::fs::read_to_string(path).unwrap(),
+            Arc::new(|x| println!("{}", x)),
+        );
     } else {
         println!("{}", HELP_TEXT);
     }
@@ -192,6 +195,7 @@ fn do_debug() {
           (define (Hack x y . z) z)
           (display (Hack 1 2 3 4 5))
         "#,
+        Arc::new(|x| println!("{}", x)),
         // TODO: Add some test
         // TODO: parser error
     )

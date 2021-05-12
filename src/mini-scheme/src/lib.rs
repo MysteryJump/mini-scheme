@@ -13,7 +13,10 @@ mod interpreter;
 mod lexer;
 mod parser;
 
-pub fn execute(source: &str) -> Vec<Result<String, String>> {
+pub fn execute(
+    source: &str,
+    stdout: Arc<dyn Fn(String) + Sync + Send>,
+) -> Vec<Result<String, String>> {
     let lexed = lexer::lex(source);
     // println!(
     //     "{:#?}",
@@ -25,7 +28,7 @@ pub fn execute(source: &str) -> Vec<Result<String, String>> {
     // );
     let mut results = Vec::new();
     let parser = Parser::new(lexed);
-    let mut interpreter = Interpreter::new(Arc::new(|x| println!("{}", x)), None);
+    let mut interpreter = Interpreter::new(stdout, None);
     while let Some(pp) = parser.parse_toplevel() {
         match interpreter.execute_toplevel(pp) {
             Either::Left(result) => {
