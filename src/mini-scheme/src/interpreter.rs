@@ -5,19 +5,18 @@ use std::{
         atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, Mutex,
     },
-    thread,
-    time::Duration,
 };
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+use std::{thread, time::Duration};
 
 use either::Either;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use tokio::sync::mpsc::{Receiver, Sender};
 use uuid::Uuid;
 
-use crate::{
-    ast::{Arg, Body, Const, Define, Expr, SExpr, TopLevel},
-    lexer,
-};
+use crate::ast::{Arg, Body, Const, Define, Expr, SExpr, TopLevel};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+use crate::lexer;
 
 type EResult = Result<ExecutionResult, String>;
 
@@ -29,6 +28,7 @@ macro_rules! add_embfunc {
     };
 }
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 type ActorResult = (u128, Vec<ExecutionResult>);
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
@@ -45,9 +45,6 @@ pub struct Actor {
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 impl Actor {
     pub fn run(&self) {
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        panic!();
-
         let receiver = self.receriver.clone();
         let interpreter = self.interpreter.clone();
         let lambda = self.lambda.clone();
@@ -247,10 +244,9 @@ impl Env {
         add_embfunc!(map, "equal?");
         add_embfunc!(map, "load");
         add_embfunc!(map, "display");
-        add_embfunc!(map, "sleep");
 
         #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-        add_embfunc!(map, "send-message", "get-result", "await");
+        add_embfunc!(map, "send-message", "get-result", "await", "sleep");
         map
     }
 
@@ -344,8 +340,8 @@ impl Interpreter {
                         self.actor_map.clone(),
                     );
                     self.actor_map.lock().unwrap().define_and_run(actor, sender);
+                    Either::Left(Ok(ExecutionResult::Unit))
                 }
-                Either::Left(Ok(ExecutionResult::Unit))
             }
             TopLevel::Load(path) => {
                 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -608,6 +604,7 @@ impl Interpreter {
                                         Ok(ExecutionResult::Unit)
                                     }
                                 }
+                                #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
                                 "sleep" => {
                                     if evaleds.is_empty() {
                                         std::thread::sleep(std::time::Duration::from_millis(1000));
@@ -646,9 +643,7 @@ impl Interpreter {
                                             let current =
                                                 self.actor_map.lock().unwrap().get_result(*id);
                                             match current {
-                                                Some(Ok(r))
-                                                    if !matches!(r, ExecutionResult::Unit) =>
-                                                {
+                                                Some(Ok(r)) => {
                                                     result = r;
                                                     break;
                                                 }
@@ -961,6 +956,7 @@ pub enum ExecutionResult {
     Unit,
     EmbeddedFunc(&'static str),
     Undefined,
+    ActorUndefined,
 }
 
 impl ExecutionResult {
@@ -985,6 +981,7 @@ impl ExecutionResult {
                 matches!(other, ExecutionResult::ActorResultId(rr) if r == rr)
             }
             ExecutionResult::Undefined => false,
+            ExecutionResult::ActorUndefined => false,
         }
     }
     /// do shallow compare
@@ -1020,6 +1017,7 @@ impl ExecutionResult {
                 matches!(other, ExecutionResult::ActorResultId(rr) if r == rr)
             }
             ExecutionResult::Undefined => false,
+            ExecutionResult::ActorUndefined => false,
         }
     }
 }
@@ -1038,6 +1036,9 @@ impl From<ExecutionResult> for Expr {
             ExecutionResult::Undefined => panic!(),
             ExecutionResult::ActorResultId(_) => {
                 panic!();
+            }
+            ExecutionResult::ActorUndefined => {
+                panic!()
             }
         }
     }
@@ -1058,7 +1059,7 @@ impl Display for ExecutionResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ExecutionResult::Number(n) => write!(f, "{}", n),
-            ExecutionResult::String(s, _) => write!(f, "\"{}\"", s),
+            ExecutionResult::String(s, _) => write!(f, "{}", s),
             ExecutionResult::Bool(false) => write!(f, "#f"),
             ExecutionResult::Bool(true) => write!(f, "#t"),
             ExecutionResult::Symbol(s) => write!(f, "{}", s),
@@ -1068,6 +1069,7 @@ impl Display for ExecutionResult {
             ExecutionResult::EmbeddedFunc(_) => write!(f, "#<procedure>"),
             ExecutionResult::Undefined => write!(f, "undefined"),
             ExecutionResult::ActorResultId(r) => write!(f, "#<actor_result:{}>", r),
+            ExecutionResult::ActorUndefined => write!(f, "#<actor_void>"),
         }
     }
 }
@@ -1448,13 +1450,7 @@ fn execute_type_check(expected: Types, actually: &[ExecutionResult]) -> EResult 
             Types::Symbol => matches!(f, ExecutionResult::Symbol(_)),
             Types::Bool => matches!(f, ExecutionResult::Bool(_)),
             Types::Proc => matches!(f, ExecutionResult::Func(_, _, _)),
-            Types::List => {
-                if let ExecutionResult::List(l) = f {
-                    l.is_list()
-                } else {
-                    false
-                }
-            }
+            Types::List => matches!(f, ExecutionResult::List(l) if l.is_list()),
             Types::Pair => {
                 if let ExecutionResult::List(l) = f {
                     !matches!(l, List::Nil)
@@ -1567,7 +1563,6 @@ enum ListOperationKind {
     Cons,
     List,
     Length,
-    #[allow(dead_code)]
     Memq,
     Last,
     Append,

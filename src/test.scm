@@ -24,7 +24,6 @@
 
 (define-and-run-actor (getTextTest num)
     (display (await (send-message isEven (+ num 12))))
-    0
 )
 
 (define actorId (send-message isEven 50000))
