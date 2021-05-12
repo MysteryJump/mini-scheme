@@ -2,7 +2,8 @@
 
 members = [
     "./mini-scheme",
-    "./mini-scheme-driver"
+    "./mini-scheme-driver",
+    "./mini-scheme-wasm"
 ]
 # [profile.release]
 # debug = true
