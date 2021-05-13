@@ -63,6 +63,8 @@ impl TokenStack {
     }
 }
 
+type PResult<T> = Result<T, ParseError>;
+
 pub struct Parser {
     tokens: TokenStack,
 }
@@ -74,10 +76,10 @@ impl Parser {
         }
     }
 
-    pub fn parse_toplevel(&self) -> Option<TopLevel> {
+    pub fn parse_toplevel(&self) -> PResult<Option<TopLevel>> {
         match self.tokens.lookahead(1) {
             Some(s) => match s.kind {
-                TokenKind::OpenParen => Some(match self.tokens.lookahead(2) {
+                TokenKind::OpenParen => Ok(Some(match self.tokens.lookahead(2) {
                     Some(s) => match s.kind {
                         TokenKind::Ident(x) if x == "load" => {
                             self.tokens.next();
@@ -85,40 +87,36 @@ impl Parser {
                             let s = if let TokenKind::Str(id) = self.tokens.next().unwrap().kind {
                                 id
                             } else {
-                                panic!()
+                                self.handle_parse_error()?
                             };
-                            self.eat_close().unwrap();
+                            self.eat_close()?;
                             TopLevel::Load(s)
                         }
                         TokenKind::Ident(x) if x == "define" => {
-                            TopLevel::Define(self.parse_define())
+                            TopLevel::Define(self.parse_define()?)
                         }
                         TokenKind::Ident(x) if x == "define-and-run-actor" => {
-                            let result = self.parse_define_actor();
+                            let result = self.parse_define_actor()?;
                             TopLevel::DefineActor(result.0, result.1)
                         }
-                        _ if self.is_next_first_of_expr() => TopLevel::Expr(self.parse_expr()),
-                        _ => panic!(),
+                        _ if self.is_next_first_of_expr() => TopLevel::Expr(self.parse_expr()?),
+                        _ => self.handle_parse_error()?,
                     },
-                    None => {
-                        panic!()
-                    }
-                }),
+                    None => self.handle_parse_error()?,
+                })),
                 TokenKind::Quote
                 | TokenKind::True
                 | TokenKind::False
                 | TokenKind::Num(_)
                 | TokenKind::Str(_)
-                | TokenKind::Ident(_) => Some(TopLevel::Expr(self.parse_expr())),
-                _ => {
-                    panic!()
-                }
+                | TokenKind::Ident(_) => Ok(Some(TopLevel::Expr(self.parse_expr()?))),
+                _ => self.handle_parse_error()?,
             },
-            None => None,
+            None => Ok(None),
         }
     }
 
-    fn parse_expr(&self) -> Expr {
+    fn parse_expr(&self) -> PResult<Expr> {
         match self.tokens.next().unwrap().kind {
             TokenKind::OpenParen => match self.tokens.lookahead(1).unwrap().kind {
                 TokenKind::Ident(x) if x == "lambda" => {
@@ -126,17 +124,17 @@ impl Parser {
                     let arg = if let TokenKind::Ident(_) | TokenKind::OpenParen =
                         self.tokens.lookahead(1).unwrap().kind
                     {
-                        self.parse_arg()
+                        self.parse_arg()?
                     } else {
-                        panic!()
+                        self.handle_parse_error()?
                     };
                     let body = if self.is_next_first_of_define() || self.is_next_first_of_expr() {
-                        self.parse_body()
+                        self.parse_body()?
                     } else {
-                        panic!()
+                        self.handle_parse_error()?
                     };
-                    self.eat_close().unwrap();
-                    Expr::Lambda(arg, body)
+                    self.eat_close()?;
+                    Ok(Expr::Lambda(arg, body))
                 }
                 TokenKind::Ident(x) if x == "quote" => {
                     self.tokens.next();
@@ -147,99 +145,97 @@ impl Parser {
                     | TokenKind::OpenParen
                     | TokenKind::Ident(_) = self.tokens.lookahead(1).unwrap().kind
                     {
-                        self.parse_sexpr()
+                        self.parse_sexpr()?
                     } else {
-                        panic!()
+                        self.handle_parse_error()?
                     };
-                    self.eat_close().unwrap();
-                    Expr::Quote(sexpr)
+                    self.eat_close()?;
+                    Ok(Expr::Quote(sexpr))
                 }
                 TokenKind::Ident(x) if x == "set!" => {
                     self.tokens.next();
                     let id = if let TokenKind::Ident(id) = self.tokens.next().unwrap().kind {
                         id
                     } else {
-                        panic!()
+                        self.handle_parse_error()?
                     };
                     let expr = if self.is_next_first_of_expr() {
-                        self.parse_expr()
+                        self.parse_expr()?
                     } else {
-                        panic!()
+                        self.handle_parse_error()?
                     };
 
-                    self.eat_close().unwrap();
-                    Expr::Set(id, Box::new(expr))
+                    self.eat_close()?;
+                    Ok(Expr::Set(id, Box::new(expr)))
                 }
                 TokenKind::Ident(x) if x == "let" => {
                     self.tokens.next();
                     let tp = match self.tokens.lookahead(1).unwrap().kind {
                         TokenKind::OpenParen => {
-                            let binds = self.parse_bindings();
+                            let binds = self.parse_bindings()?;
                             (None, binds)
                         }
                         TokenKind::Ident(id) => {
                             self.tokens.next();
-                            let binds = self.parse_bindings();
+                            let binds = self.parse_bindings()?;
                             (Some(id), binds)
                         }
-                        _ => {
-                            panic!()
-                        }
+                        _ => self.handle_parse_error()?,
                     };
                     let body = if self.is_next_first_of_define() | self.is_next_first_of_expr() {
-                        self.parse_body()
+                        self.parse_body()?
                     } else {
-                        panic!()
+                        self.handle_parse_error()?
                     };
 
-                    self.eat_close().unwrap();
-                    Expr::Let(tp.0, tp.1, body)
+                    self.eat_close()?;
+                    Ok(Expr::Let(tp.0, tp.1, body))
                 }
                 TokenKind::Ident(t) if t == "let*" || t == "letrec" => {
                     self.tokens.next();
                     let binds = if self.tokens.lookahead(1).unwrap().kind == TokenKind::OpenParen {
-                        self.parse_bindings()
+                        self.parse_bindings()?
                     } else {
-                        panic!()
+                        self.handle_parse_error()?
                     };
                     let body = if self.is_next_first_of_define() | self.is_next_first_of_expr() {
-                        self.parse_body()
+                        self.parse_body()?
                     } else {
-                        panic!()
+                        self.handle_parse_error()?
                     };
 
-                    self.eat_close().unwrap();
+                    self.eat_close()?;
                     if t == "let*" {
-                        Expr::LetStar(binds, body)
+                        Ok(Expr::LetStar(binds, body))
                     } else {
-                        Expr::LetRec(binds, body)
+                        Ok(Expr::LetRec(binds, body))
                     }
                 }
                 TokenKind::Ident(t) if t == "if" => {
                     self.tokens.next();
 
                     let cond = if self.is_next_first_of_expr() {
-                        self.parse_expr()
+                        self.parse_expr()?
                     } else {
-                        panic!()
+                        self.handle_parse_error()?
                     };
 
                     let then = if self.is_next_first_of_expr() {
-                        self.parse_expr()
+                        self.parse_expr()?
                     } else {
-                        panic!()
+                        self.handle_parse_error()?
                     };
 
                     let els = if self.is_next_first_of_expr() {
-                        Some(Box::new(self.parse_expr()))
+                        Some(Box::new(self.parse_expr()?))
                     } else if self.tokens.lookahead(1).unwrap().kind == TokenKind::CloseParen {
                         None
                     } else {
-                        panic!()
+                        self.handle_parse_error()?
                     };
 
-                    self.eat_close().unwrap();
-                    Expr::If(Box::new(cond), Box::new(then), els)
+                    self.eat_close()?;
+                    Ok(Expr::If(Box::new(cond), Box::new(then), els))
                 }
                 TokenKind::Ident(x) if x == "cond" => {
                     self.tokens.next();
@@ -251,40 +247,40 @@ impl Parser {
                                 self.tokens.next();
                                 let mut exprs = Vec::new();
                                 while self.is_next_first_of_expr() {
-                                    exprs.push(self.parse_expr());
+                                    exprs.push(self.parse_expr()?);
                                 }
                                 els = Some(exprs);
-                                self.eat_close().unwrap();
+                                self.eat_close()?;
                                 break;
                             }
                             _ => {}
                         }
                         if self.is_next_first_of_expr() {
-                            let cond = self.parse_expr();
+                            let cond = self.parse_expr()?;
                             let mut exprs = Vec::new();
                             while self.is_next_first_of_expr() {
-                                exprs.push(self.parse_expr());
+                                exprs.push(self.parse_expr()?);
                             }
                             conds.push((cond, exprs));
-                            self.eat_close().unwrap();
+                            self.eat_close()?;
                         }
                     }
 
-                    Expr::Cond(Cond(conds, els))
+                    Ok(Expr::Cond(Cond(conds, els)))
                 }
                 TokenKind::Ident(t) if t == "and" || t == "or" || t == "begin" => {
                     self.tokens.next();
                     let mut exprs = Vec::new();
                     while self.is_next_first_of_expr() {
-                        exprs.push(self.parse_expr());
+                        exprs.push(self.parse_expr()?);
                     }
 
-                    self.eat_close().unwrap();
+                    self.eat_close()?;
                     match &t as &str {
-                        "and" => Expr::And(exprs),
-                        "or" => Expr::Or(exprs),
-                        "begin" => Expr::Begin(exprs),
-                        _ => panic!(),
+                        "and" => Ok(Expr::And(exprs)),
+                        "or" => Ok(Expr::Or(exprs)),
+                        "begin" => Ok(Expr::Begin(exprs)),
+                        _ => self.handle_parse_error()?,
                     }
                 }
                 TokenKind::Ident(d) if d == "do" => {
@@ -297,74 +293,79 @@ impl Parser {
                         let id = if let TokenKind::Ident(id) = self.tokens.next().unwrap().kind {
                             id
                         } else {
-                            panic!()
+                            self.handle_parse_error()?
                         };
                         let expr1 = if self.is_next_first_of_expr() {
-                            self.parse_expr()
+                            self.parse_expr()?
                         } else {
-                            panic!()
+                            self.handle_parse_error()?
                         };
                         let expr2 = if self.is_next_first_of_expr() {
-                            self.parse_expr()
+                            self.parse_expr()?
                         } else {
-                            panic!()
+                            self.handle_parse_error()?
                         };
                         itervar.push((id, expr1, expr2));
-                        self.eat_close().unwrap();
+                        self.eat_close()?;
                     }
-                    self.eat_close().unwrap();
+                    self.eat_close()?;
 
                     self.tokens.eat(TokenKind::OpenParen).then_some(0).unwrap();
                     let cond = if self.is_next_first_of_expr() {
-                        self.parse_expr()
+                        self.parse_expr()?
                     } else {
-                        panic!()
+                        self.handle_parse_error()?
                     };
                     let mut vals = Vec::new();
                     while self.is_next_first_of_expr() {
-                        vals.push(self.parse_expr());
+                        vals.push(self.parse_expr()?);
                     }
-                    self.eat_close().unwrap();
+                    self.eat_close()?;
 
                     let body = if self.is_next_first_of_define() | self.is_next_first_of_expr() {
-                        self.parse_body()
+                        self.parse_body()?
                     } else {
-                        panic!()
+                        self.handle_parse_error()?
                     };
 
-                    self.eat_close().unwrap();
-                    Expr::Do(super::ast::Do(itervar, Box::new(cond), vals, body))
+                    self.eat_close()?;
+                    Ok(Expr::Do(super::ast::Do(
+                        itervar,
+                        Box::new(cond),
+                        vals,
+                        body,
+                    )))
                 }
                 TokenKind::CloseParen => {
-                    self.eat_close().unwrap();
-                    Expr::Const(().into())
+                    self.eat_close()?;
+                    Ok(Expr::Const(().into()))
                 }
                 _ if self.is_next_first_of_expr() => {
-                    let t = self.parse_expr();
+                    let t = self.parse_expr()?;
                     let mut vals = Vec::new();
                     while self.is_next_first_of_expr() {
-                        vals.push(self.parse_expr());
+                        vals.push(self.parse_expr()?);
                     }
-                    self.eat_close().unwrap();
-                    Expr::Apply(Box::new(t), vals)
+                    self.eat_close()?;
+                    Ok(Expr::Apply(Box::new(t), vals))
                 }
-                _ => panic!(),
+                _ => self.handle_parse_error(),
             },
             TokenKind::Quote => {
-                let sexpr = self.parse_sexpr();
-                Expr::Quote(sexpr)
+                let sexpr = self.parse_sexpr()?;
+                Ok(Expr::Quote(sexpr))
             }
-            TokenKind::Ident(id) => Expr::Id(id),
-            TokenKind::Str(s) => Expr::Const(s.into()),
-            TokenKind::True => Expr::Const(true.into()),
-            TokenKind::False => Expr::Const(false.into()),
-            TokenKind::Num(n) => Expr::Const(n.into()),
-            _ => panic!(),
+            TokenKind::Ident(id) => Ok(Expr::Id(id)),
+            TokenKind::Str(s) => Ok(Expr::Const(s.into())),
+            TokenKind::True => Ok(Expr::Const(true.into())),
+            TokenKind::False => Ok(Expr::Const(false.into())),
+            TokenKind::Num(n) => Ok(Expr::Const(n.into())),
+            _ => self.handle_parse_error(),
         }
     }
 
     // first: ( -> define(id)
-    fn parse_define(&self) -> Define {
+    fn parse_define(&self) -> PResult<Define> {
         self.tokens.eat(TokenKind::OpenParen).then_some(0).unwrap();
         self.tokens
             .eat(TokenKind::Ident("define".to_string()))
@@ -384,12 +385,12 @@ impl Parser {
                         TokenKind::Ident(id) => {
                             ids.push(id);
                         }
-                        _ => panic!(),
+                        _ => return self.handle_parse_error(),
                     }
                 }
 
                 if ids.is_empty() {
-                    panic!()
+                    return self.handle_parse_error();
                 }
                 let name = {
                     let n = ids[0].clone();
@@ -404,36 +405,35 @@ impl Parser {
                             self.tokens.eat(TokenKind::CloseParen).then_some(0).unwrap();
                             Some(id)
                         } else {
-                            panic!()
+                            self.handle_parse_error()?
                         }
                     } else {
                         None
                     },
                 );
 
-                Define::DefineList(
+                Ok(Define::DefineList(
                     ids,
                     if self.is_next_first_of_define() || self.is_next_first_of_expr() {
-                        let b = self.parse_body();
-                        self.eat_close().unwrap();
+                        let b = self.parse_body()?;
+                        self.eat_close()?;
                         b
                     } else {
-                        panic!()
+                        self.handle_parse_error()?
                     },
-                )
+                ))
             }
             TokenKind::Ident(id) if self.is_next_first_of_expr() => {
-                let expr = self.parse_expr();
-                self.eat_close().unwrap();
-                Define::Define(id, expr)
+                let expr = self.parse_expr()?;
+                self.eat_close()?;
+                Ok(Define::Define(id, expr))
             }
-            _ => {
-                panic!();
-            }
+            _ => self.handle_parse_error(),
         }
     }
 
-    fn parse_define_actor(&self) -> ((String, Vec<String>, Option<String>), Body) {
+    #[allow(clippy::type_complexity)]
+    fn parse_define_actor(&self) -> PResult<((String, Vec<String>, Option<String>), Body)> {
         self.tokens.eat(TokenKind::OpenParen).then_some(0).unwrap();
         self.tokens
             .eat(TokenKind::Ident("define-and-run-actor".to_string()))
@@ -453,12 +453,12 @@ impl Parser {
                         TokenKind::Ident(id) => {
                             ids.push(id);
                         }
-                        _ => panic!(),
+                        _ => return self.handle_parse_error(),
                     }
                 }
 
                 if ids.is_empty() {
-                    panic!()
+                    return self.handle_parse_error();
                 }
                 let name = {
                     let n = ids[0].clone();
@@ -473,43 +473,41 @@ impl Parser {
                             self.tokens.eat(TokenKind::CloseParen).then_some(0).unwrap();
                             Some(id)
                         } else {
-                            panic!()
+                            self.handle_parse_error()?
                         }
                     } else {
                         None
                     },
                 );
                 let body = if self.is_next_first_of_define() || self.is_next_first_of_expr() {
-                    let b = self.parse_body();
-                    self.eat_close().unwrap();
+                    let b = self.parse_body()?;
+                    self.eat_close()?;
                     b
                 } else {
-                    panic!()
+                    self.handle_parse_error()?
                 };
 
-                (ids, body)
+                Ok((ids, body))
             }
-            _ => {
-                panic!();
-            }
+            _ => self.handle_parse_error(),
         }
     }
 
     // first: define or expr
-    fn parse_body(&self) -> Body {
+    fn parse_body(&self) -> PResult<Body> {
         let mut defines = Vec::new();
         while self.is_next_first_of_define() {
-            defines.push(self.parse_define());
+            defines.push(self.parse_define()?);
         }
         let mut exprs = Vec::new();
         while self.is_next_first_of_expr() {
-            exprs.push(self.parse_expr());
+            exprs.push(self.parse_expr()?);
         }
-        Body(defines, exprs)
+        Ok(Body(defines, exprs))
     }
 
     // first: ( (-> Id , ))
-    fn parse_bindings(&self) -> Bindings {
+    fn parse_bindings(&self) -> PResult<Bindings> {
         self.tokens.eat(TokenKind::OpenParen);
         let mut binds = Vec::new();
         loop {
@@ -518,12 +516,12 @@ impl Parser {
                     let id = if let TokenKind::Ident(id) = self.tokens.next().unwrap().kind {
                         id
                     } else {
-                        panic!()
+                        return self.handle_parse_error();
                     };
                     let expr = if self.is_next_first_of_expr() {
-                        self.parse_expr()
+                        self.parse_expr()?
                     } else {
-                        panic!();
+                        return self.handle_parse_error();
                     };
                     binds.push((id, expr));
                     self.tokens.eat(TokenKind::CloseParen).then_some(0).unwrap();
@@ -531,15 +529,15 @@ impl Parser {
                 TokenKind::CloseParen => {
                     break;
                 }
-                _ => panic!(),
+                _ => return self.handle_parse_error(),
             }
         }
-        Bindings(binds)
+        Ok(Bindings(binds))
     }
 
     // first: (, Id
-    fn parse_arg(&self) -> Arg {
-        match self.tokens.next().unwrap().kind {
+    fn parse_arg(&self) -> PResult<Arg> {
+        Ok(match self.tokens.next().unwrap().kind {
             TokenKind::Ident(id) => Arg::Id(id),
             TokenKind::OpenParen => {
                 let mut ids = Vec::new();
@@ -553,24 +551,22 @@ impl Parser {
                         if let TokenKind::Ident(id) = self.tokens.next().unwrap().kind {
                             Arg::IdList(ids, Some(id))
                         } else {
-                            panic!()
+                            return self.handle_parse_error();
                         }
                     }
                     TokenKind::CloseParen => Arg::IdList(ids, None),
-                    _ => {
-                        panic!()
-                    }
+                    _ => return self.handle_parse_error(),
                 }
             }
-            _ => panic!(),
-        }
+            _ => return self.handle_parse_error(),
+        })
     }
 
     // first: Num, Bool, String, (, Id
-    fn parse_sexpr(&self) -> SExpr {
+    fn parse_sexpr(&self) -> PResult<SExpr> {
         let next = self.tokens.next().unwrap();
 
-        match next.kind {
+        Ok(match next.kind {
             TokenKind::OpenParen => {
                 if self.tokens.lookahead(1).unwrap().kind == TokenKind::CloseParen {
                     self.tokens.next();
@@ -585,9 +581,9 @@ impl Parser {
                             | TokenKind::Ident(_)
                             | TokenKind::True
                             | TokenKind::False
-                            | TokenKind::Num(_) => self.parse_sexpr(),
+                            | TokenKind::Num(_) => self.parse_sexpr()?,
                             TokenKind::CloseParen => {
-                                self.eat_close().unwrap();
+                                self.eat_close()?;
                                 break;
                             }
                             TokenKind::Dot => {
@@ -596,7 +592,7 @@ impl Parser {
                                 break;
                             }
                             _ => {
-                                panic!()
+                                return self.handle_parse_error();
                             }
                         };
                         sexprs.push(sexpr);
@@ -605,8 +601,8 @@ impl Parser {
                     SExpr::SExprs(
                         sexprs,
                         if has_dot {
-                            let expr = self.parse_sexpr();
-                            self.eat_close().unwrap();
+                            let expr = self.parse_sexpr()?;
+                            self.eat_close()?;
                             Some(Box::new(expr))
                         } else {
                             None
@@ -620,9 +616,9 @@ impl Parser {
             TokenKind::False => SExpr::Const(false.into()),
             TokenKind::Num(n) => SExpr::Const(n.into()),
             _ => {
-                panic!()
+                return self.handle_parse_error();
             }
-        }
+        })
     }
 
     fn is_next_first_of_expr(&self) -> bool {
@@ -659,12 +655,29 @@ impl Parser {
         }
     }
 
-    fn eat_close(&self) -> Result<(), ()> {
-        self.tokens
-            .eat(TokenKind::CloseParen)
-            .then_some(())
-            .ok_or(())
+    fn eat_close(&self) -> Result<(), ParseError> {
+        if self.tokens.eat(TokenKind::CloseParen) {
+            Ok(())
+        } else {
+            self.handle_parse_error()
+        }
     }
+
+    fn handle_parse_error<T>(&self) -> Result<T, ParseError> {
+        if let Some(t) = self.tokens.lookahead(1) {
+            Err(ParseError::UnexpectedToken(t))
+        } else {
+            Err(ParseError::UnexpectedEof)
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ParseError {
+    #[error("Unexpected token `{:?}` near ln:{} col:{}", .0.kind, .0.span.ln, .0.span.col)]
+    UnexpectedToken(Token),
+    #[error("Unexpected EoF")]
+    UnexpectedEof,
 }
 
 #[cfg(test)]
@@ -676,37 +689,37 @@ mod tests {
     fn get_toplevel_ast(src: &'static str) -> TopLevel {
         let tokens = lexer::lex(src);
         let parser = Parser::new(tokens);
-        parser.parse_toplevel().unwrap()
+        parser.parse_toplevel().unwrap().unwrap()
     }
 
     fn get_expr(src: &'static str) -> Expr {
         let tokens = lexer::lex(src);
         let parser = Parser::new(tokens);
-        parser.parse_expr()
+        parser.parse_expr().unwrap()
     }
 
     fn get_body(src: &'static str) -> Body {
         let tokens = lexer::lex(src);
         let parser = Parser::new(tokens);
-        parser.parse_body()
+        parser.parse_body().unwrap()
     }
 
     fn get_bindings(src: &'static str) -> Bindings {
         let tokens = lexer::lex(src);
         let parser = Parser::new(tokens);
-        parser.parse_bindings()
+        parser.parse_bindings().unwrap()
     }
 
     fn get_sexpr(src: &'static str) -> SExpr {
         let tokens = lexer::lex(src);
         let parser = Parser::new(tokens);
-        parser.parse_sexpr()
+        parser.parse_sexpr().unwrap()
     }
 
     fn get_arg(src: &'static str) -> Arg {
         let tokens = lexer::lex(src);
         let parser = Parser::new(tokens);
-        parser.parse_arg()
+        parser.parse_arg().unwrap()
     }
 
     #[test]

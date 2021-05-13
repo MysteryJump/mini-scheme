@@ -360,7 +360,7 @@ impl Interpreter {
                     let lexer = lexer::lex(&src);
                     let parser = crate::parser::Parser::new(lexer);
                     let mut results = Vec::new();
-                    while let Some(pp) = parser.parse_toplevel() {
+                    while let Some(pp) = parser.parse_toplevel().unwrap() {
                         match self.execute_toplevel(pp) {
                             Either::Left(l) => {
                                 results.push(l);

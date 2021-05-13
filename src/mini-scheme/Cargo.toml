@@ -10,6 +10,7 @@ edition = "2018"
 if_chain = "1"
 uuid = { version = "0.8", features = ["v4", "wasm-bindgen"] }
 either = "1"
+thiserror = "1"
 
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 tokio = { version = "1", features = ["full"] }

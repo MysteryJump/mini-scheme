@@ -29,7 +29,7 @@ pub fn execute(
     let mut results = Vec::new();
     let parser = Parser::new(lexed);
     let mut interpreter = Interpreter::new(stdout, None);
-    while let Some(pp) = parser.parse_toplevel() {
+    while let Some(pp) = parser.parse_toplevel().unwrap() {
         match interpreter.execute_toplevel(pp) {
             Either::Left(result) => {
                 results.push(result.map(|x| x.to_string()));
@@ -61,36 +61,38 @@ impl Repl {
         let lexed = lexer::lex(line);
         let parser = Parser::new(lexed);
 
-        if let Some(pp) = parser.parse_toplevel() {
-            let mut interpreter = Interpreter::with_env(self.current_env.clone());
-            let str = match interpreter.execute_toplevel(pp) {
-                Either::Left(result) => match result {
-                    Ok(r) => r.to_string(),
-                    Err(e) => e,
-                },
-                Either::Right(r) => {
-                    let mut s = String::new();
-                    for item in r {
-                        match item {
-                            Ok(ss) => {
-                                if !matches!(ss, interpreter::ExecutionResult::Unit) {
-                                    s.push_str(&ss.to_string());
+        match parser.parse_toplevel() {
+            Ok(Some(pp)) => {
+                let mut interpreter = Interpreter::with_env(self.current_env.clone());
+                let str = match interpreter.execute_toplevel(pp) {
+                    Either::Left(result) => match result {
+                        Ok(r) => r.to_string(),
+                        Err(e) => e,
+                    },
+                    Either::Right(r) => {
+                        let mut s = String::new();
+                        for item in r {
+                            match item {
+                                Ok(ss) => {
+                                    if !matches!(ss, interpreter::ExecutionResult::Unit) {
+                                        s.push_str(&ss.to_string());
+                                        s.push('\n')
+                                    }
+                                }
+                                Err(e) => {
+                                    s.push_str(&e);
                                     s.push('\n')
                                 }
                             }
-                            Err(e) => {
-                                s.push_str(&e);
-                                s.push('\n')
-                            }
                         }
+                        s
                     }
-                    s
-                }
-            };
-            self.current_env = interpreter.get_env();
-            str
-        } else {
-            "".to_string()
+                };
+                self.current_env = interpreter.get_env();
+                str
+            }
+            Ok(None) => "".to_string(),
+            Err(e) => e.to_string(),
         }
     }
 
@@ -114,7 +116,7 @@ impl Executer {
         let lexed = lexer::lex(lines);
         let parser = Parser::new(lexed);
         let mut interpreter = Interpreter::new(Arc::new(|x| println!("{}", x)), None);
-        while let Some(pp) = parser.parse_toplevel() {
+        while let Some(pp) = parser.parse_toplevel().map_err(|x| x.to_string())? {
             interpreter.execute_toplevel(pp);
         }
         let executor = Self { interpreter };

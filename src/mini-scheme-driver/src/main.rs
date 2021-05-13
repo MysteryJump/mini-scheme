@@ -61,8 +61,8 @@ async fn repl() {
         std::io::stdout().flush().unwrap();
         loop {
             std::io::stdin().read_line(&mut line).unwrap();
-            let paren_depth = line.chars().filter(|x| x == &'(').count()
-                - line.chars().filter(|x| x == &')').count();
+            let paren_depth = line.chars().filter(|x| x == &'(').count() as i32
+                - line.chars().filter(|x| x == &')').count() as i32;
             if paren_depth == 0 {
                 break;
             }
