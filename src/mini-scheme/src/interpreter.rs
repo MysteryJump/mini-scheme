@@ -600,7 +600,7 @@ impl Interpreter {
                                     if evaleds.len() != 1 {
                                         Err(("a number of argument needs 1").to_string())
                                     } else {
-                                        (*self.env.logger.clone())(evaleds[0].to_string());
+                                        (*self.env.logger.clone())(evaleds[0].to_string_display());
                                         Ok(ExecutionResult::Unit)
                                     }
                                 }
@@ -1020,6 +1020,14 @@ impl ExecutionResult {
             ExecutionResult::ActorUndefined => false,
         }
     }
+
+    fn to_string_display(&self) -> String {
+        if let ExecutionResult::String(s, _) = self {
+            s.to_string()
+        } else {
+            self.to_string()
+        }
+    }
 }
 
 impl From<ExecutionResult> for Expr {
@@ -1059,7 +1067,7 @@ impl Display for ExecutionResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ExecutionResult::Number(n) => write!(f, "{}", n),
-            ExecutionResult::String(s, _) => write!(f, "{}", s),
+            ExecutionResult::String(s, _) => write!(f, "\"{}\"", s),
             ExecutionResult::Bool(false) => write!(f, "#f"),
             ExecutionResult::Bool(true) => write!(f, "#t"),
             ExecutionResult::Symbol(s) => write!(f, "{}", s),
@@ -1076,26 +1084,26 @@ impl Display for ExecutionResult {
 
 #[derive(Debug, Clone)]
 pub enum List {
-    Cons(Box<ExecutionResult>, Box<ExecutionResult>, u128),
+    Cons(Arc<ExecutionResult>, Arc<ExecutionResult>, u128),
     Nil,
 }
 
 impl List {
     pub fn new(result: ExecutionResult) -> Self {
         Self::Cons(
-            Box::new(result),
-            Box::new(ExecutionResult::List(List::Nil)),
+            Arc::new(result),
+            Arc::new(ExecutionResult::List(List::Nil)),
             Uuid::new_v4().as_u128(),
         )
     }
 
     pub fn cons(left: ExecutionResult, right: ExecutionResult) -> Self {
-        Self::Cons(Box::new(left), Box::new(right), Uuid::new_v4().as_u128())
+        Self::Cons(Arc::new(left), Arc::new(right), Uuid::new_v4().as_u128())
     }
 
     pub fn car(&self) -> ExecutionResult {
         match self {
-            List::Cons(car, _, _) => *car.clone(),
+            List::Cons(car, _, _) => (*car.clone()).clone(),
             List::Nil => ExecutionResult::List(List::Nil),
         }
     }
@@ -1109,7 +1117,7 @@ impl List {
 
     pub fn cdr(&self) -> ExecutionResult {
         match self {
-            List::Cons(_, cdr, _) => *cdr.clone(),
+            List::Cons(_, cdr, _) => (*cdr.clone()).clone(),
             List::Nil => ExecutionResult::List(List::Nil),
         }
     }
@@ -1123,7 +1131,7 @@ impl List {
 
     pub fn is_list(&self) -> bool {
         match self {
-            List::Cons(_, cdr, _) => match *cdr.clone() {
+            List::Cons(_, cdr, _) => match (*cdr.clone()).clone() {
                 ExecutionResult::List(l) => l.is_list(),
                 _ => false,
             },
@@ -1141,7 +1149,7 @@ impl List {
 
     fn len_(ls: &List, depth: usize) -> usize {
         match ls {
-            List::Cons(_, cdr, _) => match *cdr.clone() {
+            List::Cons(_, cdr, _) => match (*cdr.clone()).clone() {
                 ExecutionResult::List(l) => Self::len_(&l, depth + 1),
                 _ => panic!(),
             },
@@ -1208,6 +1216,32 @@ impl List {
             )
         }
     }
+
+    fn car_arc_ref(&self) -> (Arc<ExecutionResult>, u128) {
+        match self {
+            List::Cons(car, _, uuid) => (car.clone(), *uuid),
+            List::Nil => panic!(),
+        }
+    }
+
+    fn cdr_arc_ref(&self) -> (Arc<ExecutionResult>, u128) {
+        match self {
+            List::Cons(_, cdr, uuid) => (cdr.clone(), *uuid),
+            List::Nil => panic!(),
+        }
+    }
+
+    pub fn set_car(target: &List, result: ExecutionResult) -> List {
+        let (cdr, uuid) = target.cdr_arc_ref();
+        List::Cons(Arc::new(result), cdr, uuid)
+    }
+
+    pub fn set_cdr(target: &List, result: ExecutionResult) -> List {
+        let (car, uuid) = target.car_arc_ref();
+        println!("{:?}", result);
+        println!("{:?}", car);
+        List::Cons(car, Arc::new(result), uuid)
+    }
 }
 
 impl From<List> for ExecutionResult {
@@ -1226,8 +1260,8 @@ impl From<(Vec<ExecutionResult>, Option<ExecutionResult>)> for List {
         let mut list = last;
         for item in ls.iter().rev() {
             list = ExecutionResult::List(List::Cons(
-                Box::new(item.clone()),
-                Box::new(list),
+                Arc::new(item.clone()),
+                Arc::new(list),
                 Uuid::new_v4().as_u128(),
             ));
         }
@@ -1596,8 +1630,8 @@ fn execute_list_operation(operation_kind: ListOperationKind, vals: &[ExecutionRe
                 Err(("number of arguments needs `2`").to_string())
             } else {
                 Ok(List::Cons(
-                    Box::new(vals[0].clone()),
-                    Box::new(vals[1].clone()),
+                    Arc::new(vals[0].clone()),
+                    Arc::new(vals[1].clone()),
                     Uuid::new_v4().as_u128(),
                 )
                 .into())
@@ -1691,7 +1725,7 @@ fn execute_list_operation(operation_kind: ListOperationKind, vals: &[ExecutionRe
             if vals.len() != 2 {
                 Err(("number of arguments needs `2`").to_string())
             } else {
-                let (first, uuid) = if let ExecutionResult::List(ls) = &vals[0] {
+                let (first, _) = if let ExecutionResult::List(ls) = &vals[0] {
                     if let List::Cons(_, _, uuid) = ls {
                         (ls, uuid)
                     } else {
@@ -1704,18 +1738,14 @@ fn execute_list_operation(operation_kind: ListOperationKind, vals: &[ExecutionRe
                         "expected type is pair?, but actually type is different".to_string()
                     );
                 };
-                Ok(ExecutionResult::List(List::Cons(
-                    Box::new(vals[1].clone()),
-                    Box::new(first.cdr()),
-                    *uuid,
-                )))
+                Ok(ExecutionResult::List(List::set_car(first, vals[1].clone())))
             }
         }
         ListOperationKind::SetCdr => {
             if vals.len() != 2 {
                 Err(("number of arguments needs `2`").to_string())
             } else {
-                let (first, uuid) = if let ExecutionResult::List(ls) = &vals[0] {
+                let (first, _) = if let ExecutionResult::List(ls) = &vals[0] {
                     if let List::Cons(_, _, uuid) = ls {
                         (ls, uuid)
                     } else {
@@ -1728,11 +1758,7 @@ fn execute_list_operation(operation_kind: ListOperationKind, vals: &[ExecutionRe
                         "expected type is pair?, but actually type is different".to_string()
                     );
                 };
-                Ok(ExecutionResult::List(List::Cons(
-                    Box::new(first.car()),
-                    Box::new(vals[1].clone()),
-                    *uuid,
-                )))
+                Ok(ExecutionResult::List(List::set_cdr(first, vals[1].clone())))
             }
         }
     }
