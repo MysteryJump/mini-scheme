@@ -221,7 +221,7 @@ impl Env {
         }
     }
 
-    fn get_embedded_func_names() -> HashMap<String, ExecutionResult> {
+    pub fn get_embedded_func_names() -> HashMap<String, ExecutionResult> {
         let mut map = HashMap::new();
         add_embfunc!(map, "number?", "+", "-", "*", "/", "=", "<", "<=", ">", ">=");
         add_embfunc!(
@@ -239,9 +239,7 @@ impl Env {
             "number->string"
         );
         add_embfunc!(map, "procedure?");
-        add_embfunc!(map, "eq?");
-        add_embfunc!(map, "neq?");
-        add_embfunc!(map, "equal?");
+        add_embfunc!(map, "eq?", "neq?", "equal?");
         add_embfunc!(map, "load");
         add_embfunc!(map, "display");
 
@@ -342,6 +340,9 @@ impl Interpreter {
                     self.actor_map.lock().unwrap().define_and_run(actor, sender);
                     Either::Left(Ok(ExecutionResult::Unit))
                 }
+            }
+            TopLevel::DefineProperties(ins, flows) => {
+                todo!()
             }
             TopLevel::Load(path) => {
                 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

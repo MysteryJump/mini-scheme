@@ -12,6 +12,7 @@ mod ast;
 mod interpreter;
 mod lexer;
 mod parser;
+mod reactive;
 
 pub fn execute(
     source: &str,

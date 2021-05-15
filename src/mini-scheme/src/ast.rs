@@ -6,6 +6,7 @@ pub enum TopLevel {
     Define(Define),
     DefineActor((String, Vec<String>, Option<String>), Body),
     Load(String),
+    DefineProperties(Bindings, Bindings),
 }
 
 #[derive(Debug, Clone, PartialEq)]
