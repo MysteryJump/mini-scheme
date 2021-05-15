@@ -8,7 +8,7 @@ use crate::{
     interpreter::{Env, ExecutionResult, Interpreter},
 };
 
-struct Reactive {
+pub struct Reactive {
     dependency_pairs: HashMap<String, Vec<String>>,
     topo_order: Vec<String>,
     before_values: HashMap<String, ExecutionResult>,
@@ -128,14 +128,18 @@ impl Reactive {
         values
     }
 
-    fn update_value(&mut self, id: &str, value: ExecutionResult) -> Result<(), ()> {
+    pub fn update_value(&mut self, id: &str, value: ExecutionResult) -> Result<(), ()> {
         if !self.ins.contains(id) {
             return Err(());
         }
         let deps = &self.dependency_pairs[id];
         let mut env = Env::new(Arc::new(|_| {}), None);
+        env.add_define(id.to_string(), value.clone());
+        self.before_values.insert(id.to_string(), value);
         for item in &self.topo_order {
-            if deps.contains(item) {
+            if id == item {
+                continue;
+            } else if deps.contains(item) {
                 let mut ipr = Interpreter::with_env(env);
                 let r = ipr.execute_toplevel(TopLevel::Expr(self.flow_exprs[item].clone()));
                 env = ipr.get_env();
@@ -152,7 +156,7 @@ impl Reactive {
         Ok(())
     }
 
-    fn get_value(&self, id: &str) -> Option<ExecutionResult> {
+    pub fn get_value(&self, id: &str) -> Option<ExecutionResult> {
         self.before_values.get(id).cloned()
     }
 }
@@ -165,7 +169,7 @@ struct VariableUsagesChecker<'a> {
 }
 
 impl<'a> VariableUsagesChecker<'a> {
-    pub fn new(allowed_variables: &'a [&str]) -> Self {
+    fn new(allowed_variables: &'a [&str]) -> Self {
         Self {
             used_variables: Vec::new(),
             allowed_variables,
@@ -209,7 +213,7 @@ impl<'a> VariableUsagesChecker<'a> {
         }
     }
 
-    pub fn check_expr_variables_usages(mut self, expr: &'a Expr) -> (bool, Vec<&'a str>) {
+    fn check_expr_variables_usages(mut self, expr: &'a Expr) -> (bool, Vec<&'a str>) {
         (
             self.check_expr_variables_usages_(expr, self.allowed_variables),
             self.used_variables,

@@ -14,9 +14,12 @@ use either::Either;
 use tokio::sync::mpsc::{Receiver, Sender};
 use uuid::Uuid;
 
-use crate::ast::{Arg, Body, Const, Define, Expr, SExpr, TopLevel};
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use crate::lexer;
+use crate::{
+    ast::{Arg, Body, Const, Define, Expr, SExpr, TopLevel},
+    reactive::Reactive,
+};
 
 type EResult = Result<ExecutionResult, String>;
 
@@ -137,6 +140,8 @@ pub struct Env {
     str_consts_pairs: Mutex<HashMap<String, u128>>,
     logger: Arc<dyn Fn(String) + Sync + Send>,
     cancellation_token: Option<Arc<AtomicBool>>,
+    reactive_properties: Option<Arc<Mutex<Reactive>>>,
+    is_newborn: bool,
 }
 
 impl Env {
@@ -157,6 +162,8 @@ impl Env {
             str_consts_pairs: Mutex::new(HashMap::new()),
             logger,
             cancellation_token,
+            reactive_properties: None,
+            is_newborn: true,
         }
     }
 
@@ -180,7 +187,13 @@ impl Env {
         let cdepth = self.current_depth.load(Ordering::SeqCst);
 
         let rf = self.defineds.lock().unwrap();
-        rf[cdepth as usize].get(&name).cloned().map(|x| x.0)
+        if let Some(r) = rf[cdepth as usize].get(&name).cloned().map(|x| x.0) {
+            Some(r)
+        } else if let Some(r) = &self.reactive_properties {
+            r.lock().unwrap().get_value(&name)
+        } else {
+            None
+        }
     }
 
     pub fn enter_block(&self) {
@@ -216,6 +229,15 @@ impl Env {
                     .insert(name.clone(), (result.clone(), target_depth));
             }
             Ok(r)
+        } else if let Some(r) = &self.reactive_properties {
+            let lock = r.clone();
+            let mut lock = lock.lock().unwrap();
+            lock.update_value(&name, result)?;
+            if let Some(r) = lock.get_value(&name) {
+                Ok(r)
+            } else {
+                Err(())
+            }
         } else {
             Err(())
         }
@@ -258,6 +280,12 @@ impl Env {
             addr
         }
     }
+
+    pub fn set_reactive(&mut self, reactive: Arc<Mutex<Reactive>>) {
+        if self.reactive_properties.is_none() {
+            self.reactive_properties = Some(reactive);
+        }
+    }
 }
 
 impl std::fmt::Debug for Env {
@@ -278,6 +306,8 @@ impl Clone for Env {
             str_consts_pairs: Mutex::new(self.str_consts_pairs.lock().unwrap().clone()),
             logger: self.logger.clone(),
             cancellation_token: self.cancellation_token.clone(),
+            reactive_properties: self.reactive_properties.clone(),
+            is_newborn: self.is_newborn,
         }
     }
 }
@@ -319,7 +349,7 @@ impl Interpreter {
     }
 
     pub fn execute_toplevel(&mut self, toplevel: TopLevel) -> Either<EResult, Vec<EResult>> {
-        match toplevel {
+        let r = match toplevel {
             TopLevel::Expr(e) => Either::Left(self.execute_expr(e)),
             TopLevel::Define(def) => Either::Left(self.execute_define(def)),
             TopLevel::DefineActor((name, args, rest_arg), body) => {
@@ -342,7 +372,18 @@ impl Interpreter {
                 }
             }
             TopLevel::DefineProperties(ins, flows) => {
-                todo!()
+                if self.env.is_newborn {
+                    let reactive = match Reactive::new(&ins, flows)
+                        .map_err(|_| "Cannot analyze reactive properties.".to_string())
+                    {
+                        Ok(r) => r,
+                        Err(e) => return Either::Left(Err(e)),
+                    };
+                    self.env.set_reactive(Arc::new(Mutex::new(reactive)));
+                    Either::Left(Ok(ExecutionResult::Unit))
+                } else {
+                    panic!();
+                }
             }
             TopLevel::Load(path) => {
                 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -374,7 +415,9 @@ impl Interpreter {
                     results
                 })
             }
-        }
+        };
+        self.env.is_newborn = false;
+        r
     }
 
     fn execute_expr(&self, mut expr: Expr) -> EResult {

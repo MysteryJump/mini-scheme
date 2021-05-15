@@ -99,6 +99,10 @@ impl Parser {
                             let result = self.parse_define_actor()?;
                             TopLevel::DefineActor(result.0, result.1)
                         }
+                        TokenKind::Ident(x) if x == "define-properties" => {
+                            let result = self.parse_define_properties()?;
+                            TopLevel::DefineProperties(result.0, result.1)
+                        }
                         _ if self.is_next_first_of_expr() => TopLevel::Expr(self.parse_expr()?),
                         _ => self.handle_parse_error()?,
                     },
@@ -493,6 +497,18 @@ impl Parser {
         }
     }
 
+    fn parse_define_properties(&self) -> PResult<(Bindings, Bindings)> {
+        self.tokens.eat(TokenKind::OpenParen).then_some(0).unwrap();
+        self.tokens
+            .eat(TokenKind::Ident("define-properties".to_string()))
+            .then_some(0)
+            .unwrap();
+        let initials = self.parse_bindings()?;
+        let flows = self.parse_bindings()?;
+        self.eat_close()?;
+        Ok((initials, flows))
+    }
+
     // first: define or expr
     fn parse_body(&self) -> PResult<Body> {
         let mut defines = Vec::new();
@@ -508,7 +524,7 @@ impl Parser {
 
     // first: ( (-> Id , ))
     fn parse_bindings(&self) -> PResult<Bindings> {
-        self.tokens.eat(TokenKind::OpenParen);
+        self.tokens.eat(TokenKind::OpenParen).then_some(0).unwrap();
         let mut binds = Vec::new();
         loop {
             match self.tokens.next().unwrap().kind {
