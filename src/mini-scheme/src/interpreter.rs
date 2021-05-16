@@ -6,15 +6,15 @@ use std::{
         Arc, Mutex,
     },
 };
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(feature = "concurrent")]
 use std::{thread, time::Duration};
 
 use either::Either;
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(feature = "concurrent")]
 use tokio::sync::mpsc::{Receiver, Sender};
 use uuid::Uuid;
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(feature = "concurrent")]
 use crate::lexer;
 use crate::{
     ast::{Arg, Body, Const, Define, Expr, SExpr, TopLevel},
@@ -31,10 +31,10 @@ macro_rules! add_embfunc {
     };
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(feature = "concurrent")]
 type ActorResult = (u128, Vec<ExecutionResult>);
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(feature = "concurrent")]
 #[derive(Debug)]
 pub struct Actor {
     results: Arc<Mutex<HashMap<u128, EResult>>>,
@@ -45,7 +45,7 @@ pub struct Actor {
     handle: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(feature = "concurrent")]
 impl Actor {
     pub fn run(&self) {
         let receiver = self.receriver.clone();
@@ -95,14 +95,14 @@ impl Actor {
     }
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(feature = "concurrent")]
 #[derive(Debug, Default)]
 pub struct ActorMap {
     pub map: HashMap<String, (Actor, Sender<ActorResult>)>,
     pub message_id_name_pairs: Mutex<HashMap<u128, String>>,
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(feature = "concurrent")]
 impl ActorMap {
     pub fn new() -> Self {
         Self::default()
@@ -265,7 +265,7 @@ impl Env {
         add_embfunc!(map, "load");
         add_embfunc!(map, "display");
 
-        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        #[cfg(feature = "concurrent")]
         add_embfunc!(map, "send-message", "get-result", "await", "sleep");
         map
     }
@@ -315,7 +315,7 @@ impl Clone for Env {
 #[derive(Debug)]
 pub struct Interpreter {
     env: Env,
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(feature = "concurrent")]
     actor_map: Arc<Mutex<ActorMap>>,
 }
 
@@ -326,7 +326,7 @@ impl Interpreter {
     ) -> Self {
         Self {
             env: Env::new(logger, cancellation_token),
-            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            #[cfg(feature = "concurrent")]
             actor_map: Arc::new(Mutex::new(ActorMap::new())),
         }
     }
@@ -334,12 +334,12 @@ impl Interpreter {
     pub fn with_env(env: Env) -> Self {
         Self {
             env,
-            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            #[cfg(feature = "concurrent")]
             actor_map: Arc::new(Mutex::new(ActorMap::new())),
         }
     }
 
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(feature = "concurrent")]
     pub fn with_env_and_actor_map(env: Env, actor_map: Arc<Mutex<ActorMap>>) -> Self {
         Self { env, actor_map }
     }
@@ -353,12 +353,12 @@ impl Interpreter {
             TopLevel::Expr(e) => Either::Left(self.execute_expr(e)),
             TopLevel::Define(def) => Either::Left(self.execute_define(def)),
             TopLevel::DefineActor((name, args, rest_arg), body) => {
-                #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                #[cfg(not(feature = "concurrent"))]
                 return Either::Left(Err(
                     "Unsupported feature usage in this platform.".to_string()
                 ));
 
-                #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+                #[cfg(feature = "concurrent")]
                 {
                     let (actor, sender) = Actor::new(
                         name,
@@ -386,12 +386,12 @@ impl Interpreter {
                 }
             }
             TopLevel::Load(path) => {
-                #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                #[cfg(not(feature = "concurrent"))]
                 return Either::Left(Err(
                     "Unsupported function usage in this platform.".to_string()
                 ));
 
-                #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+                #[cfg(feature = "concurrent")]
                 Either::Right({
                     let src = match std::fs::read_to_string(path)
                         .map_err(|_| "Cannot read file.".to_string())
@@ -522,7 +522,7 @@ impl Interpreter {
                                 }
                             }
                         },
-                        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+                        #[cfg(feature = "concurrent")]
                         ExecutionResult::EmbeddedFunc("send-message") => {
                             if arg_apply.is_empty() {
                                 Err("the number of arguments needs 1 at least".to_string())
@@ -543,7 +543,7 @@ impl Interpreter {
                                 Err("the first argument needs id".to_string())
                             }
                         }
-                        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+                        #[cfg(feature = "concurrent")]
                         ExecutionResult::EmbeddedFunc("stop-actor") => {
                             if arg_apply.is_empty() {
                                 Err("the number of arguments needs 1 at least".to_string())
@@ -648,7 +648,7 @@ impl Interpreter {
                                         Ok(ExecutionResult::Unit)
                                     }
                                 }
-                                #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+                                #[cfg(feature = "concurrent")]
                                 "sleep" => {
                                     if evaleds.is_empty() {
                                         std::thread::sleep(std::time::Duration::from_millis(1000));
@@ -662,7 +662,7 @@ impl Interpreter {
                                         Err("the number of argument needs 1 or 0 and first-argument needs number?".to_string())
                                     }
                                 }
-                                #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+                                #[cfg(feature = "concurrent")]
                                 "get-result" => {
                                     if evaleds.is_empty() {
                                         Err("the number of argument needs 1 and first-argument needs actor_id?".to_string())
@@ -677,7 +677,7 @@ impl Interpreter {
                                     }
                                 }
                                 // TODO: multiple await
-                                #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+                                #[cfg(feature = "concurrent")]
                                 "await" => {
                                     if evaleds.is_empty() {
                                         Err("the number of argument needs 1 and first-argument needs actor_id?".to_string())
@@ -702,7 +702,7 @@ impl Interpreter {
                                         Err("the number of argument needs 1 and first-argument needs actor_id?".to_string())
                                     }
                                 }
-                                #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+                                #[cfg(feature = "concurrent")]
                                 "actor-id" => {
                                     if evaleds.len() != 1
                                         || matches!(&evaleds[0], ExecutionResult::String(_, _))

@@ -28,7 +28,8 @@
     "build": "craco build",
     "test": "craco test",
     "eject": "react-scripts eject",
-    "deploy": "yarn build && gh-pages -d build"
+    "deploy": "yarn build && gh-pages -d build",
+    "update": "yarn remove mini-scheme-wasm && yarn add ../src/mini-scheme-wasm/pkg"
   },
   "eslintConfig": {
     "extends": [

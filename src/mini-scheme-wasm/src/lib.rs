@@ -23,7 +23,7 @@ pub fn execute_lines(lines: &str) -> String {
     mini_scheme::execute(
         lines,
         Arc::new(|x| {
-            RESULT.lock().unwrap().push_str(&x);
+            RESULT.lock().unwrap().push_str(&format!("{}\n", x));
         }),
     );
 
