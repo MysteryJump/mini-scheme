@@ -9,6 +9,7 @@ use parser::Parser;
 use crate::ast::{Expr, SExpr, TopLevel};
 
 mod ast;
+mod builtins;
 mod interpreter;
 mod lexer;
 mod parser;
@@ -19,14 +20,6 @@ pub fn execute(
     stdout: Arc<dyn Fn(String) + Sync + Send>,
 ) -> Vec<Result<String, String>> {
     let lexed = lexer::lex(source);
-    // println!(
-    //     "{:#?}",
-    //     lexed
-    //         .iter()
-    //         .map(|x| x.kind.clone())
-    //         .filter(|x| !(x == &lexer::TokenKind::Other))
-    //         .collect::<Vec<_>>()
-    // );
     let mut results = Vec::new();
     let parser = Parser::new(lexed);
     let mut interpreter = Interpreter::new(stdout, None);
