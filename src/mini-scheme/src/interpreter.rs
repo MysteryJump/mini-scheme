@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
         Arc, Mutex,
     },
 };
@@ -150,6 +150,7 @@ pub struct Env {
     reactive_properties: Option<Arc<Mutex<Reactive>>>,
     is_newborn: bool,
     flames: Mutex<Option<HashMap<String, (ExecutionResult, i32)>>>,
+    pushed_flame_depth: AtomicI32,
 }
 
 impl Env {
@@ -173,6 +174,7 @@ impl Env {
             reactive_properties: None,
             is_newborn: true,
             flames: Mutex::new(None),
+            pushed_flame_depth: AtomicI32::new(-1),
         }
     }
 
@@ -196,20 +198,26 @@ impl Env {
         let cdepth = self.current_depth.load(Ordering::SeqCst);
 
         let rf = self.defineds.lock().unwrap();
-        if let Some(r) = rf[cdepth as usize].get(&name).cloned().map(|x| x.0) {
-            Some(r)
-        } else if let Some(r) = self.flames.lock().unwrap().as_ref() {
-            if let Some((r, _)) = r.get(&name) {
-                Some(r.clone())
-            } else if let Some(r) = &self.reactive_properties {
-                r.lock().unwrap().get_value(&name)
-            } else {
-                None
+        let current_env = rf[cdepth as usize].get(&name).cloned();
+        let flame_env = self.flames.lock().unwrap().as_ref().cloned();
+        let flame_env = flame_env.and_then(|x| x.get(&name).cloned());
+        match (current_env, flame_env) {
+            (None, None) => {
+                if let Some(r) = &self.reactive_properties {
+                    r.lock().unwrap().get_value(&name)
+                } else {
+                    None
+                }
             }
-        } else if let Some(r) = &self.reactive_properties {
-            r.lock().unwrap().get_value(&name)
-        } else {
-            None
+            (None, Some(s)) => Some(s.0),
+            (Some(s), None) => Some(s.0),
+            (Some(cenv), Some(fenv)) => {
+                if cenv.1 >= fenv.1 {
+                    Some(cenv.0)
+                } else {
+                    Some(fenv.0)
+                }
+            }
         }
     }
 
@@ -232,10 +240,17 @@ impl Env {
 
     pub fn push_flame(&self, flame: HashMap<String, (ExecutionResult, i32)>) {
         self.flames.lock().unwrap().replace(flame);
+        self.pushed_flame_depth.store(
+            self.current_depth.load(Ordering::SeqCst) as i32,
+            Ordering::SeqCst,
+        );
     }
 
     pub fn pop_flame(&self) {
-        self.flames.lock().unwrap().take();
+        let pushed_depth = self.pushed_flame_depth.load(Ordering::SeqCst);
+        if pushed_depth >= 0 && pushed_depth as u32 >= self.current_depth.load(Ordering::SeqCst) {
+            self.flames.lock().unwrap().take();
+        }
     }
 
     pub fn update_entry(
@@ -338,6 +353,7 @@ impl Clone for Env {
             reactive_properties: self.reactive_properties.clone(),
             is_newborn: self.is_newborn,
             flames: Mutex::new(self.flames.lock().unwrap().clone()),
+            pushed_flame_depth: AtomicI32::new(self.pushed_flame_depth.load(Ordering::SeqCst)),
         }
     }
 }
@@ -982,6 +998,7 @@ impl Interpreter {
             for _ in 0..tail_depth {
                 self.env.exit_block();
             }
+            self.env.pop_flame();
             return r;
         }
     }
