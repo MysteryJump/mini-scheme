@@ -10,6 +10,7 @@ use std::{
 use std::{thread, time::Duration};
 
 use either::Either;
+use num_rational::Rational64;
 #[cfg(feature = "concurrent")]
 use tokio::sync::mpsc::{Receiver, Sender};
 use uuid::Uuid;
@@ -245,7 +246,7 @@ impl Env {
 
     pub fn get_embedded_func_names() -> HashMap<String, ExecutionResult> {
         let mut map = HashMap::new();
-        add_embfunc!(map, "number?", "+", "-", "*", "/", "=", "<", "<=", ">", ">=");
+        add_embfunc!(map, "number?", "integer?", "+", "-", "*", "/", "=", "<", "<=", ">", ">=");
         add_embfunc!(
             map, "null?", "pair?", "list?", "symbol?", "car", "cdr", "cons", "list", "length",
             "memq", "last", "append", "set-car!", "set-cdr!"
@@ -582,6 +583,7 @@ impl Interpreter {
                                 "string?" => execute_type_check(Types::String, &evaleds),
                                 "boolean?" => execute_type_check(Types::Bool, &evaleds),
                                 "number?" => execute_type_check(Types::Num, &evaleds),
+                                "integer?" => execute_type_check(Types::Integer, &evaleds),
                                 "symbol?" => execute_type_check(Types::Symbol, &evaleds),
                                 "procedure?" => execute_type_check(Types::Proc, &evaleds),
                                 "not" => execute_not(&evaleds),
@@ -655,7 +657,7 @@ impl Interpreter {
                                         Ok(ExecutionResult::Unit)
                                     } else if let ExecutionResult::Number(n) = &evaleds[0] {
                                         std::thread::sleep(std::time::Duration::from_millis(
-                                            *n as u64,
+                                            n.to_integer() as u64,
                                         ));
                                         Ok(ExecutionResult::Unit)
                                     } else {
@@ -990,7 +992,7 @@ impl Interpreter {
 
 #[derive(Debug, Clone)]
 pub enum ExecutionResult {
-    Number(i64),
+    Number(Rational64),
     ActorResultId(u128),
     String(String, u128),
     Bool(bool),
@@ -1077,7 +1079,19 @@ impl ExecutionResult {
 impl From<ExecutionResult> for Expr {
     fn from(er: ExecutionResult) -> Self {
         match er {
-            ExecutionResult::Number(n) => Expr::Const(n.into()),
+            ExecutionResult::Number(n) => {
+                if n.is_integer() {
+                    Expr::Const((*n.numer()).into())
+                } else {
+                    Expr::Apply(
+                        Box::new(Expr::Id("/".to_string())),
+                        vec![
+                            Expr::Const((*n.numer()).into()),
+                            Expr::Const((*n.denom()).into()),
+                        ],
+                    )
+                }
+            }
             ExecutionResult::String(s, _) => Expr::Const(s.into()),
             ExecutionResult::Bool(b) => Expr::Const(b.into()),
             ExecutionResult::Symbol(s) => Expr::Quote(SExpr::Const(s.into())),
@@ -1101,7 +1115,7 @@ impl Const {
         match self {
             Const::Str(s) => ExecutionResult::String(s.to_string(), env.get_const_str_addr(s)),
             Const::Bool(b) => ExecutionResult::Bool(b),
-            Const::Num(n) => ExecutionResult::Number(n),
+            Const::Num(n) => ExecutionResult::Number(Rational64::from_integer(n)),
             Const::Unit => ExecutionResult::Unit,
         }
     }
@@ -1368,7 +1382,7 @@ fn test_list() {
     let cons = List::cons(
         ExecutionResult::Number(3.into()),
         ExecutionResult::List(List::cons(
-            ExecutionResult::Number(3),
+            ExecutionResult::Number(3.into()),
             ExecutionResult::List(List::Nil),
         )),
     );
@@ -1378,15 +1392,15 @@ fn test_list() {
     assert!(!cons.is_list());
 
     let vecs = vec![
-        ExecutionResult::Number(3),
-        ExecutionResult::Number(4),
-        ExecutionResult::Number(5),
+        ExecutionResult::Number(3.into()),
+        ExecutionResult::Number(4.into()),
+        ExecutionResult::Number(5.into()),
     ];
 
     let list: List = (vecs.clone(), None).into();
     assert!(list.is_list());
 
-    let not_list: List = (vecs, Some(ExecutionResult::Number(23))).into();
+    let not_list: List = (vecs, Some(ExecutionResult::Number(23.into()))).into();
     assert!(!not_list.is_list());
 }
 
@@ -1440,7 +1454,7 @@ fn execute_number_binary_operation(op_kind: NumOpKind, results: &[ExecutionResul
                         return Err("number of argument needs 1 at least".to_string());
                     };
                     for item in iter {
-                        if item == &0 {
+                        if item == &0.into() {
                             return Err("division by zero".to_string());
                         }
                         first /= item;
@@ -1515,6 +1529,7 @@ enum Types {
     List,
     Pair,
     Null,
+    Integer,
 }
 
 fn execute_type_check(expected: Types, actually: &[ExecutionResult]) -> EResult {
@@ -1539,6 +1554,7 @@ fn execute_type_check(expected: Types, actually: &[ExecutionResult]) -> EResult 
             Types::Null => {
                 matches!(f, ExecutionResult::List(List::Nil))
             }
+            Types::Integer => matches!(f, ExecutionResult::Number(n) if n.is_integer()),
         }))
     }
 }
@@ -1570,7 +1586,7 @@ fn execute_conversion(from_ty: ConvType, to_ty: ConvType, vals: &[ExecutionResul
             (ConvType::Str, ConvType::Num) => {
                 if let ExecutionResult::String(s, _) = f {
                     Ok(match s.parse::<i64>() {
-                        Ok(s) => ExecutionResult::Number(s),
+                        Ok(s) => ExecutionResult::Number(s.into()),
                         Err(_) => ExecutionResult::Bool(false),
                     })
                 } else {
@@ -1625,7 +1641,10 @@ fn execute_string_append(vals: &[ExecutionResult]) -> EResult {
 fn test_execute_number_binary_comp() {
     let result = execute_number_binary_comparison(
         NumCompOpKind::Lt,
-        &vec![ExecutionResult::Number(5), ExecutionResult::Number(3)],
+        &vec![
+            ExecutionResult::Number(5.into()),
+            ExecutionResult::Number(3.into()),
+        ],
     )
     .unwrap();
     if let ExecutionResult::Bool(b) = result {
@@ -1690,7 +1709,7 @@ fn execute_list_operation(operation_kind: ListOperationKind, vals: &[ExecutionRe
                 Err(("number of arguments needs `1`").to_string())
             } else if let ExecutionResult::List(ls) = &vals[0] {
                 match ls.len() {
-                    Ok(l) => Ok(ExecutionResult::Number(l as i64)),
+                    Ok(l) => Ok(ExecutionResult::Number((l as i64).into())),
                     Err(_) => {
                         Err("expected type is list?, but actually type is diffrent".to_string())
                     }

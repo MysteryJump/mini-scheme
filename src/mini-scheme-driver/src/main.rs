@@ -108,6 +108,8 @@ async fn repl() {
         })
         .await
         .unwrap();
+        repl.cancellation_token
+            .store(false, std::sync::atomic::Ordering::SeqCst);
 
         unsafe {
             sig_id = Some(
