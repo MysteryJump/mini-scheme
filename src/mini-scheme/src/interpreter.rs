@@ -143,6 +143,7 @@ pub struct Env {
     cancellation_token: Option<Arc<AtomicBool>>,
     reactive_properties: Option<Arc<Mutex<Reactive>>>,
     is_newborn: bool,
+    flames: Mutex<Option<HashMap<String, (ExecutionResult, i32)>>>,
 }
 
 impl Env {
@@ -165,6 +166,7 @@ impl Env {
             cancellation_token,
             reactive_properties: None,
             is_newborn: true,
+            flames: Mutex::new(None),
         }
     }
 
@@ -190,6 +192,14 @@ impl Env {
         let rf = self.defineds.lock().unwrap();
         if let Some(r) = rf[cdepth as usize].get(&name).cloned().map(|x| x.0) {
             Some(r)
+        } else if let Some(r) = self.flames.lock().unwrap().as_ref() {
+            if let Some((r, _)) = r.get(&name) {
+                Some(r.clone())
+            } else if let Some(r) = &self.reactive_properties {
+                r.lock().unwrap().get_value(&name)
+            } else {
+                None
+            }
         } else if let Some(r) = &self.reactive_properties {
             r.lock().unwrap().get_value(&name)
         } else {
@@ -208,6 +218,18 @@ impl Env {
         let cdepth = self.current_depth.load(Ordering::SeqCst);
         self.defineds.lock().unwrap().pop();
         self.current_depth.store(cdepth - 1, Ordering::SeqCst);
+    }
+
+    pub fn get_current_flame(&self) -> HashMap<String, (ExecutionResult, i32)> {
+        self.defineds.lock().unwrap().last().unwrap().clone()
+    }
+
+    pub fn push_flame(&self, flame: HashMap<String, (ExecutionResult, i32)>) {
+        self.flames.lock().unwrap().replace(flame);
+    }
+
+    pub fn pop_flame(&self) {
+        self.flames.lock().unwrap().take();
     }
 
     pub fn update_entry(
@@ -309,6 +331,7 @@ impl Clone for Env {
             cancellation_token: self.cancellation_token.clone(),
             reactive_properties: self.reactive_properties.clone(),
             is_newborn: self.is_newborn,
+            flames: Mutex::new(self.flames.lock().unwrap().clone()),
         }
     }
 }
@@ -440,89 +463,97 @@ impl Interpreter {
                     arg.clone(),
                     body.clone(),
                     Uuid::new_v4().as_u128(),
+                    self.env.get_current_flame(),
                 )),
                 Expr::Apply(func, arg_apply) => {
                     let result_func = self.execute_expr(*func.clone())?;
                     match result_func {
-                        ExecutionResult::Func(arg_func, body, _) => match arg_func {
-                            Arg::Id(id) => {
-                                if arg_apply.len() != 1 {
-                                    Err("Args count is not match".to_string())
-                                } else {
-                                    self.env.enter_block();
-                                    self.env
-                                        .add_define(id, self.execute_expr(arg_apply[0].clone())?);
-                                    let result = self.execute_body_with_tail(body)?;
-                                    expr = result;
-                                    tail_depth += 1;
-                                    continue;
-                                }
-                            }
-                            Arg::IdList(ids, rest) => {
-                                if let Some(rest) = rest {
-                                    if ids.len() > arg_apply.len() {
-                                        Err("Args count is fewer".to_string())
+                        ExecutionResult::Func(arg_func, body, _, flame) => {
+                            self.env.push_flame(flame);
+                            let r = match arg_func {
+                                Arg::Id(id) => {
+                                    if arg_apply.len() != 1 {
+                                        Err("Args count is not match".to_string())
                                     } else {
-                                        let ids_len = ids.len();
-                                        let ids = if ids.len() < arg_apply.len() {
-                                            let mut ids = ids;
-                                            ids.append(
-                                                &mut std::iter::repeat(rest.clone())
-                                                    .take(arg_apply.len() - ids.len())
-                                                    .collect(),
-                                            );
-                                            ids
-                                        } else {
-                                            ids
-                                        };
-                                        let executed_results =
-                                            ids.iter().zip(arg_apply).map(|(name, expr)| {
-                                                (name, self.execute_expr(expr.clone()))
-                                            });
-
-                                        let args = executed_results
-                                            .clone()
-                                            .take(ids.len())
-                                            .collect::<Vec<_>>();
-
-                                        let mut rests = Vec::new();
-                                        for (_, r) in executed_results.skip(ids_len) {
-                                            rests.push(r?);
-                                        }
-                                        let list = ExecutionResult::List((rests, None).into());
-
                                         self.env.enter_block();
-                                        for (name, result) in args {
-                                            self.env.add_define(name.to_string(), result?);
-                                        }
-
-                                        self.env.add_define(rest, list);
-
+                                        self.env.add_define(
+                                            id,
+                                            self.execute_expr(arg_apply[0].clone())?,
+                                        );
                                         let result = self.execute_body_with_tail(body)?;
                                         expr = result;
                                         tail_depth += 1;
                                         continue;
                                     }
-                                } else if ids.len() != arg_apply.len() {
-                                    Err("Args count is not match".to_string())
-                                } else {
-                                    self.env.enter_block();
-                                    let mut binds = Vec::new();
-                                    for (key, result) in ids
-                                        .iter()
-                                        .zip(arg_apply)
-                                        .map(|(name, expr)| (name, self.execute_expr(expr.clone())))
-                                    {
-                                        binds.push((key.to_string(), result?));
-                                    }
-                                    self.env.add_defines(binds);
-                                    let result = self.execute_body_with_tail(body)?;
-                                    expr = result;
-                                    tail_depth += 1;
-                                    continue;
                                 }
-                            }
-                        },
+                                Arg::IdList(ids, rest) => {
+                                    if let Some(rest) = rest {
+                                        if ids.len() > arg_apply.len() {
+                                            Err("Args count is fewer".to_string())
+                                        } else {
+                                            let ids_len = ids.len();
+                                            let ids = if ids.len() < arg_apply.len() {
+                                                let mut ids = ids;
+                                                ids.append(
+                                                    &mut std::iter::repeat(rest.clone())
+                                                        .take(arg_apply.len() - ids.len())
+                                                        .collect(),
+                                                );
+                                                ids
+                                            } else {
+                                                ids
+                                            };
+                                            let executed_results =
+                                                ids.iter().zip(arg_apply).map(|(name, expr)| {
+                                                    (name, self.execute_expr(expr.clone()))
+                                                });
+
+                                            let args = executed_results
+                                                .clone()
+                                                .take(ids.len())
+                                                .collect::<Vec<_>>();
+
+                                            let mut rests = Vec::new();
+                                            for (_, r) in executed_results.skip(ids_len) {
+                                                rests.push(r?);
+                                            }
+                                            let list = ExecutionResult::List((rests, None).into());
+
+                                            self.env.enter_block();
+                                            for (name, result) in args {
+                                                self.env.add_define(name.to_string(), result?);
+                                            }
+
+                                            self.env.add_define(rest, list);
+
+                                            let result = self.execute_body_with_tail(body)?;
+                                            expr = result;
+                                            tail_depth += 1;
+                                            continue;
+                                        }
+                                    } else if ids.len() != arg_apply.len() {
+                                        Err("Args count is not match".to_string())
+                                    } else {
+                                        self.env.enter_block();
+                                        let mut binds = Vec::new();
+                                        for (key, result) in
+                                            ids.iter().zip(arg_apply).map(|(name, expr)| {
+                                                (name, self.execute_expr(expr.clone()))
+                                            })
+                                        {
+                                            binds.push((key.to_string(), result?));
+                                        }
+                                        self.env.add_defines(binds);
+                                        let result = self.execute_body_with_tail(body)?;
+                                        expr = result;
+                                        tail_depth += 1;
+                                        continue;
+                                    }
+                                }
+                            };
+                            self.env.pop_flame();
+                            r
+                        }
                         #[cfg(feature = "concurrent")]
                         ExecutionResult::EmbeddedFunc("send-message") => {
                             if arg_apply.is_empty() {
@@ -771,6 +802,7 @@ impl Interpreter {
                             Arg::IdList(arg_ls, None),
                             body.clone(),
                             Uuid::new_v4().as_u128(),
+                            self.env.get_current_flame(),
                         );
                         self.env.add_define(name.clone(), func);
 
@@ -955,7 +987,12 @@ impl Interpreter {
             }
             Define::DefineList((name, arg, arg_rest), body) => self.env.add_define(
                 name,
-                ExecutionResult::Func(Arg::IdList(arg, arg_rest), body, Uuid::new_v4().as_u128()),
+                ExecutionResult::Func(
+                    Arg::IdList(arg, arg_rest),
+                    body,
+                    Uuid::new_v4().as_u128(),
+                    self.env.get_current_flame(),
+                ),
             ),
         }
         Ok(ExecutionResult::Unit)
@@ -997,7 +1034,7 @@ pub enum ExecutionResult {
     String(String, u128),
     Bool(bool),
     Symbol(String),
-    Func(Arg, Body, u128),
+    Func(Arg, Body, u128, HashMap<String, (ExecutionResult, i32)>),
     List(List),
     Unit,
     EmbeddedFunc(&'static str),
@@ -1015,8 +1052,8 @@ impl ExecutionResult {
             }
             ExecutionResult::Bool(b) => matches!(other, ExecutionResult::Bool(bb) if b == bb),
             ExecutionResult::Symbol(s) => matches!(other, ExecutionResult::Symbol(ss) if s == ss),
-            ExecutionResult::Func(_, _, a) => {
-                matches!(other, ExecutionResult::Func(_,_,aa) if a == aa)
+            ExecutionResult::Func(_, _, a, _) => {
+                matches!(other, ExecutionResult::Func(_,_,aa,_) if a == aa)
             }
             ExecutionResult::List(l) => matches!(other, ExecutionResult::List(ll) if l.equal(ll)),
             ExecutionResult::Unit => matches!(other, ExecutionResult::Unit),
@@ -1045,8 +1082,8 @@ impl ExecutionResult {
             ExecutionResult::Symbol(sym) => {
                 matches!(other, ExecutionResult::Symbol(sym2) if sym == sym2)
             }
-            ExecutionResult::Func(_, _, faddr) => {
-                matches!(other, ExecutionResult::Func(_,_, saddr) if faddr == saddr)
+            ExecutionResult::Func(_, _, faddr, _) => {
+                matches!(other, ExecutionResult::Func(_,_, saddr,_) if faddr == saddr)
             }
             ExecutionResult::List(fl) => match other {
                 ExecutionResult::List(List::Nil) => matches!(fl, List::Nil),
@@ -1095,7 +1132,7 @@ impl From<ExecutionResult> for Expr {
             ExecutionResult::String(s, _) => Expr::Const(s.into()),
             ExecutionResult::Bool(b) => Expr::Const(b.into()),
             ExecutionResult::Symbol(s) => Expr::Quote(SExpr::Const(s.into())),
-            ExecutionResult::Func(arg, body, _) => Expr::Lambda(arg, body),
+            ExecutionResult::Func(arg, body, _, _) => Expr::Lambda(arg, body),
             ExecutionResult::List(_) => todo!(),
             ExecutionResult::Unit => Expr::Const(().into()),
             ExecutionResult::EmbeddedFunc(s) => Expr::Id(s.to_string()),
@@ -1129,7 +1166,7 @@ impl Display for ExecutionResult {
             ExecutionResult::Bool(false) => write!(f, "#f"),
             ExecutionResult::Bool(true) => write!(f, "#t"),
             ExecutionResult::Symbol(s) => write!(f, "{}", s),
-            ExecutionResult::Func(_, _, _) => write!(f, "#<procedure>"),
+            ExecutionResult::Func(_, _, _, _) => write!(f, "#<procedure>"),
             ExecutionResult::Unit => write!(f, ""),
             ExecutionResult::List(l) => write!(f, "{}", l),
             ExecutionResult::EmbeddedFunc(_) => write!(f, "#<procedure>"),
@@ -1542,7 +1579,7 @@ fn execute_type_check(expected: Types, actually: &[ExecutionResult]) -> EResult 
             Types::Num => matches!(f, ExecutionResult::Number(_)),
             Types::Symbol => matches!(f, ExecutionResult::Symbol(_)),
             Types::Bool => matches!(f, ExecutionResult::Bool(_)),
-            Types::Proc => matches!(f, ExecutionResult::Func(_, _, _)),
+            Types::Proc => matches!(f, ExecutionResult::Func(_, _, _, _)),
             Types::List => matches!(f, ExecutionResult::List(l) if l.is_list()),
             Types::Pair => {
                 if let ExecutionResult::List(l) = f {
