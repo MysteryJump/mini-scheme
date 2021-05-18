@@ -54,7 +54,6 @@ pub fn lex(src: &str) -> Vec<Token> {
         source = &source[bs.len as usize..];
         tokens.push(nt);
     }
-    println!("{:?}", tokens);
     tokens
 }
 
@@ -97,6 +96,7 @@ fn next_token(src: &str, before_span: Span) -> Option<Token> {
         },
         '#' => boolean(&mut chars, before_span),
         '"' => string(&mut chars, before_span),
+        ';' => comment(&mut chars, before_span),
         '0'..='9'
         | 'a'..='z'
         | 'A'..='Z'
@@ -171,6 +171,12 @@ fn string(chars: &mut Chars, bf: Span) -> Token {
                 s.pop();
                 s.push('"');
             }
+            'n' if ignore_next => {
+                ignore_next = false;
+                dq_count += 1;
+                s.pop();
+                s.push('\n');
+            }
             '"' => {
                 break;
             }
@@ -185,7 +191,6 @@ fn string(chars: &mut Chars, bf: Span) -> Token {
         }
     }
     let len = (s.len() + 2 + dq_count) as i32;
-    println!("len: {}", len);
     Token {
         span: Span {
             col: bf.col + len,
@@ -232,6 +237,22 @@ fn ident_or_num<'a>(chars: &mut Chars, src: &'a str, bf: Span) -> Token {
                 ..bf
             },
         }
+    }
+}
+
+fn comment(chars: &mut Chars, bf: Span) -> Token {
+    let mut len = 0;
+    for ch in chars {
+        match ch {
+            '\n' => break,
+            _ => {
+                len += 1;
+            }
+        }
+    }
+    Token {
+        kind: TokenKind::Other,
+        span: Span { len, ..bf },
     }
 }
 
