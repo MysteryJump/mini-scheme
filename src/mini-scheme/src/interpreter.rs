@@ -1309,7 +1309,15 @@ impl List {
     pub fn equal(&self, other: &List) -> bool {
         let other_car = other.car_ref();
         let other_cdr = other.cdr_ref();
-        self.car().equal(other_car) && self.cdr().equal(other_cdr)
+        if matches!(other_car, ExecutionResult::List(List::Nil))
+            && matches!(other_cdr, ExecutionResult::List(List::Nil))
+            && matches!(self.car(), ExecutionResult::List(List::Nil))
+            && matches!(self.cdr(), ExecutionResult::List(List::Nil))
+        {
+            true
+        } else {
+            self.car().equal(other_car) && self.cdr().equal(other_cdr)
+        }
     }
 
     pub fn memq(target: List, result: &ExecutionResult) -> Result<List, ()> {
@@ -1356,8 +1364,6 @@ impl List {
 
     pub fn set_cdr(target: &List, result: ExecutionResult) -> List {
         let (car, uuid) = target.car_arc_ref();
-        println!("{:?}", result);
-        println!("{:?}", car);
         List::Cons(car, Arc::new(result), uuid)
     }
 }

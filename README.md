@@ -10,7 +10,8 @@ Mini-scheme written by Rust
 
 ## Limitation
 
-- Cannot manipulate cyclic list
+- Cannot manipulate cyclic list 
+- Cannot manipulate reference 
 
 ## Sample
 

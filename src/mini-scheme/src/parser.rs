@@ -255,6 +255,7 @@ impl Parser {
                                 }
                                 els = Some(exprs);
                                 self.eat_close()?;
+                                self.eat_close()?; // HACK: i don't know why, but it need
                                 break;
                             }
                             _ => {}
@@ -565,6 +566,7 @@ impl Parser {
                 match kind.kind {
                     TokenKind::Dot => {
                         if let TokenKind::Ident(id) = self.tokens.next().unwrap().kind {
+                            self.eat_close()?;
                             Arg::IdList(ids, Some(id))
                         } else {
                             return self.handle_parse_error();
@@ -680,6 +682,7 @@ impl Parser {
     }
 
     fn handle_parse_error<T>(&self) -> Result<T, ParseError> {
+        println!("{:#?}", self.tokens);
         if let Some(t) = self.tokens.lookahead(1) {
             Err(ParseError::UnexpectedToken(t))
         } else {
