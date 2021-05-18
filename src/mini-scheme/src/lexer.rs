@@ -54,6 +54,7 @@ pub fn lex(src: &str) -> Vec<Token> {
         source = &source[bs.len as usize..];
         tokens.push(nt);
     }
+    println!("{:?}", tokens);
     tokens
 }
 
@@ -95,7 +96,7 @@ fn next_token(src: &str, before_span: Span) -> Option<Token> {
             },
         },
         '#' => boolean(&mut chars, before_span),
-        '"' => string(&mut chars, src, before_span),
+        '"' => string(&mut chars, before_span),
         '0'..='9'
         | 'a'..='z'
         | 'A'..='Z'
@@ -158,37 +159,41 @@ fn boolean(chars: &mut Chars, bf: Span) -> Token {
     }
 }
 
-fn string<'a>(chars: &mut Chars, src: &'a str, bf: Span) -> Token {
+fn string(chars: &mut Chars, bf: Span) -> Token {
     let mut ignore_next = false;
-    let mut last_ind = 0;
-    for (ind, ch) in chars.enumerate() {
+    let mut dq_count = 0;
+    let mut s = String::new();
+    for (_, ch) in chars.enumerate() {
         match ch {
             '"' if ignore_next => {
                 ignore_next = false;
+                dq_count += 1;
+                s.pop();
+                s.push('"');
             }
             '"' => {
-                last_ind = ind;
                 break;
             }
             '\\' => {
+                s.push(ch);
                 ignore_next = true;
             }
-            '\n' => {
-                // TODO: as unknown token
-                panic!();
+            _ => {
+                s.push(ch);
+                ignore_next = false;
             }
-            _ => {}
         }
     }
-    let len = (last_ind + 2) as i32;
+    let len = (s.len() + 2 + dq_count) as i32;
+    println!("len: {}", len);
     Token {
-        kind: TokenKind::Str(src[1..=last_ind].to_string()),
         span: Span {
-            col: bf.col + 1,
+            col: bf.col + len,
             ln: bf.ln,
             len,
-            abs: bf.abs + 1,
+            abs: bf.abs + len,
         },
+        kind: TokenKind::Str(s),
     }
 }
 
