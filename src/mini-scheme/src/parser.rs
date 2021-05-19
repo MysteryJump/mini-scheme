@@ -682,7 +682,6 @@ impl Parser {
     }
 
     fn handle_parse_error<T>(&self) -> Result<T, ParseError> {
-        println!("{:#?}", self.tokens);
         if let Some(t) = self.tokens.lookahead(1) {
             Err(ParseError::UnexpectedToken(t))
         } else {

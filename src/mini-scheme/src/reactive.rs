@@ -343,6 +343,7 @@ impl<'a> VariableUsagesChecker<'a> {
 mod tests {
     use super::*;
 
+    // Not passed currently
     #[test]
     fn test_reactive() {
         let initials = Bindings(vec![

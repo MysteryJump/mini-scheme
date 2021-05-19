@@ -28,3 +28,4 @@
 (display (string-append "from a1 " (await a1)))
 (display (string-append "from a2 " (await a2)))
 (display (string-append "from a3 " (await a3)))
+(display (string-append "from last " (await (send-message isEvenActor1 5678))))

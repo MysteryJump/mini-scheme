@@ -48,7 +48,7 @@ pub struct Actor {
     name: String,
     lambda: Expr,
     receriver: Arc<Mutex<Receiver<ActorResult>>>,
-    interpreter: Arc<Interpreter>,
+    interpreter: Arc<Mutex<Interpreter>>,
     handle: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
@@ -64,7 +64,7 @@ impl Actor {
             {
                 let mut recver = recver.lock().unwrap();
                 while let Some((mes_id, mes_body)) = recver.blocking_recv() {
-                    let result = interpreter.execute_expr(Expr::Apply(
+                    let result = interpreter.lock().unwrap().execute_expr(Expr::Apply(
                         Box::new(lambda.clone()),
                         mes_body.into_iter().map(|x| x.into()).collect(),
                     ));
@@ -93,7 +93,10 @@ impl Actor {
                 results: Arc::new(Mutex::new(HashMap::new())),
                 name,
                 lambda,
-                interpreter: Arc::new(Interpreter::with_env_and_actor_map(current_env, actor_map)),
+                interpreter: Arc::new(Mutex::new(Interpreter::with_env_and_actor_map(
+                    current_env,
+                    actor_map,
+                ))),
                 receriver: Arc::new(Mutex::new(recvr)),
                 handle: Mutex::new(None),
             },
@@ -395,6 +398,7 @@ impl Interpreter {
     }
 
     pub fn execute_toplevel(&mut self, toplevel: TopLevel) -> Either<EResult, Vec<EResult>> {
+        self.env.current_depth.store(0, Ordering::SeqCst);
         let r = match toplevel {
             TopLevel::Expr(e) => Either::Left(self.execute_expr(e)),
             TopLevel::Define(def) => Either::Left(self.execute_define(def)),
@@ -466,7 +470,7 @@ impl Interpreter {
         r
     }
 
-    fn execute_expr(&self, mut expr: Expr) -> EResult {
+    fn execute_expr(&mut self, mut expr: Expr) -> EResult {
         let mut tail_depth = 0;
         loop {
             if let Some(tk) = self.env.cancellation_token.as_ref() {
@@ -498,10 +502,8 @@ impl Interpreter {
                                         Err("Args count is not match".to_string())
                                     } else {
                                         self.env.enter_block();
-                                        self.env.add_define(
-                                            id,
-                                            self.execute_expr(arg_apply[0].clone())?,
-                                        );
+                                        let r = self.execute_expr(arg_apply[0].clone())?;
+                                        self.env.add_define(id, r);
                                         let result = self.execute_body_with_tail(body)?;
                                         expr = result;
                                         tail_depth += 1;
@@ -525,25 +527,29 @@ impl Interpreter {
                                             } else {
                                                 ids
                                             };
-                                            let executed_results =
-                                                ids.iter().zip(arg_apply).map(|(name, expr)| {
+                                            let executed_results = ids
+                                                .iter()
+                                                .zip(arg_apply)
+                                                .map(|(name, expr)| {
                                                     (name, self.execute_expr(expr.clone()))
-                                                });
+                                                })
+                                                .collect::<Vec<_>>();
 
                                             let args = executed_results
-                                                .clone()
+                                                .iter()
                                                 .take(ids.len())
                                                 .collect::<Vec<_>>();
 
                                             let mut rests = Vec::new();
-                                            for (_, r) in executed_results.skip(ids_len) {
-                                                rests.push(r?);
+                                            for (_, r) in executed_results.iter().skip(ids_len) {
+                                                rests.push(r.clone()?);
                                             }
                                             let list = ExecutionResult::List((rests, None).into());
 
                                             self.env.enter_block();
                                             for (name, result) in args {
-                                                self.env.add_define(name.to_string(), result?);
+                                                self.env
+                                                    .add_define(name.to_string(), result.clone()?);
                                             }
 
                                             self.env.add_define(rest, list);
@@ -806,11 +812,13 @@ impl Interpreter {
                         ExecutionResult::List((results, rest).into())
                     }
                 }),
-                Expr::Set(name, expr) => self
-                    .env
-                    .update_entry(name.clone(), self.execute_expr(*expr.clone())?)
-                    .map_err(|_| "set expr to undefined name".to_string())
-                    .map(|_| ExecutionResult::Unit),
+                Expr::Set(name, expr) => {
+                    let r = self.execute_expr(*expr.clone())?;
+                    self.env
+                        .update_entry(name.clone(), r)
+                        .map_err(|_| "set expr to undefined name".to_string())
+                        .map(|_| ExecutionResult::Unit)
+                }
                 Expr::Let(name, binds, body) => {
                     let mut calced_bindeds = Vec::new();
                     for (name, expr) in &binds.0 {
@@ -839,8 +847,8 @@ impl Interpreter {
                 Expr::LetStar(binds, body) => {
                     let envs_depth = binds.0.len();
                     for (name, expr) in &binds.0 {
-                        self.env
-                            .add_define(name.to_string(), self.execute_expr(expr.clone())?);
+                        let r = self.execute_expr(expr.clone())?;
+                        self.env.add_define(name.to_string(), r);
                         self.env.enter_block();
                     }
                     let result = self.execute_body_with_tail(body.clone())?;
@@ -1003,10 +1011,11 @@ impl Interpreter {
         }
     }
 
-    fn execute_define(&self, define: Define) -> EResult {
+    fn execute_define(&mut self, define: Define) -> EResult {
         match define {
             Define::Define(name, expr) => {
-                self.env.add_define(name, self.execute_expr(expr)?);
+                let r = self.execute_expr(expr)?;
+                self.env.add_define(name, r);
             }
             Define::DefineList((name, arg, arg_rest), body) => self.env.add_define(
                 name,
@@ -1021,7 +1030,7 @@ impl Interpreter {
         Ok(ExecutionResult::Unit)
     }
 
-    fn execute_body(&self, body: Body) -> EResult {
+    fn execute_body(&mut self, body: Body) -> EResult {
         body.0
             .iter()
             .map(|x| self.execute_define(x.clone()))
@@ -1034,7 +1043,7 @@ impl Interpreter {
         Ok(results.last().unwrap().clone())
     }
 
-    fn execute_body_with_tail(&self, body: Body) -> Result<Expr, String> {
+    fn execute_body_with_tail(&mut self, body: Body) -> Result<Expr, String> {
         body.0
             .iter()
             .map(|x| self.execute_define(x.clone()))
@@ -1538,12 +1547,12 @@ fn execute_list_operation(operation_kind: ListOperationKind, vals: &[ExecutionRe
             if vals.len() != 2 {
                 Err(("number of arguments needs `2`").to_string())
             } else {
-                let list = if let ExecutionResult::List(ls) = vals[0].clone() {
+                let list = if let ExecutionResult::List(ls) = vals[1].clone() {
                     ls
                 } else {
                     return Err("expected type is list?, but actually type is diffrent".to_string());
                 };
-                match List::memq(list, &vals[1]) {
+                match List::memq(list, &vals[0]) {
                     Ok(o) => Ok(ExecutionResult::List(o)),
                     Err(_) => {
                         Err("expected type is list?, but actually type is diffrent".to_string())

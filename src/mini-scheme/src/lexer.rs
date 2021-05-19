@@ -252,7 +252,7 @@ fn comment(chars: &mut Chars, bf: Span) -> Token {
     }
     Token {
         kind: TokenKind::Other,
-        span: Span { len, ..bf },
+        span: Span { len: len + 1, ..bf },
     }
 }
 

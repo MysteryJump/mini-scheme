@@ -1,8 +1,8 @@
 (define (assert-shallow left right) 
-    (if (eq? left right) '() (begin (display "Assertion Error: left,right is") (display left) (display right) (display)))
+    (if (eq? left right) '() (begin (display "Assertion Error: left,right is") (display left) (display right) (display "")))
 )
 (define (assert-deep left right)
-    (if (equal? left right) '() (begin (display "Assertion Error: left,right is") (display left) (display right) (display)))
+    (if (equal? left right) '() (begin (display "Assertion Error: left,right is") (display left) (display right) (display "")))
 )
 
 (define x 28)
@@ -21,7 +21,7 @@
 (assert-shallow (add4 6) 10)
 (assert-shallow x 28)
 
-(assert-deep ((lambda x x) 3 4 5 6) '(3 4 5 6))
+(assert-deep ((lambda x x) '(3 4 5 6)) '(3 4 5 6))
 (assert-deep ((lambda (x y . z) z) 3 4 5 6) '(5 6))
 
 (assert-shallow (if (> 3 2) 'yes 'no) 'yes)
@@ -50,7 +50,7 @@
 (assert-shallow (or (= 2 2) (> 2 1)) #t)
 (assert-shallow (or (= 2 2) (< 2 1)) #t)
 (assert-shallow (or #f #f #f) #f)
-(assert-shallow (or (memq 'b '(a b c)) (/ 3 0)) '(b c))
+(assert-deep (or (memq 'b '(a b c)) (/ 3 0)) '(b c))
 
 (assert-shallow (let ((x 2) (y 3)) (* x y)) 6)
 (assert-shallow (let ((x 2) (y 3)) (let ((x 7) (z (+ x y))) (* z x))) 35)
@@ -125,8 +125,8 @@
 (assert-shallow (equal? '(a (b) c) '(a (b) c)) #t)
 (assert-shallow (equal? "abc" "abc") #t)
 
-(assert-shallow (rational? (/ 6 10)) #t)
-(assert-shallow (rational? (/ 6 3)) #t)
+(assert-shallow (number? (/ 6 10)) #t)
+(assert-shallow (number? (/ 6 3)) #t)
 (assert-shallow (integer? (/ 8 4)) #t)
 (assert-shallow (integer? (/ 6 5)) #f)
 
@@ -145,3 +145,13 @@
 (assert-shallow (boolean? #f) #t)
 (assert-shallow (boolean? 0) #f)
 (assert-shallow (boolean? '()) #f)
+
+;(define x (list 'a 'b 'c))
+;(define y x)
+;(assert-deep y '(a b c))
+;(assert-shallow (list? y) #t)
+;(set-cdr! x 4)
+;(assert-deep x '(a . 4))
+;(assert-shallow (eq? x y) #t)
+;(set-cdr! x x)
+;(assert-shallow (list? x) #f)
