@@ -8,6 +8,7 @@
 (define x 28)
 (assert-shallow x 28)
 
+; actually, expected :(
 (assert-shallow (procedure? (lambda (x) (+ x x))) #t)
 (assert-shallow ((lambda (x) (+ x x)) 4) 8)
 
@@ -154,6 +155,55 @@
 (set-cdr! x 4)
 (assert-deep x '(a . 4))
 (assert-shallow (eq? x y) #t)
-; (assert-shallow (equal? x y) #t) ; Fail
+(assert-deep y '(a . 4))
+(assert-shallow (list? y) #f)
+(assert-shallow (equal? x y) #t)
 (set-cdr! x x)
 (assert-shallow (list? x) #f)
+
+(assert-shallow (pair? '(a . b)) #t)
+(assert-shallow (pair? '(a b c)) #t)
+(assert-shallow (pair? '()) #f)
+
+(assert-deep (cons 'a '()) '(a))
+(assert-deep (cons '(a) '(b c d)) '((a) b c d))
+(assert-deep (cons "a" '(b c)) '("a" b c))
+(assert-deep (cons 'a 3) '(a . 3))
+(assert-deep (cons '(a b) 'c) '((a b) . c))
+
+(assert-shallow (car '(a b c)) 'a)
+(assert-deep (car '((a) b c d)) '(a))
+(assert-shallow (car '(1 . 2)) 1)
+
+(assert-deep (cdr '((a) b c d)) '(b c d))
+(assert-shallow (cdr '(1 . 2)) 2)
+
+(assert-shallow (list? '(a b c)) #t)
+(assert-shallow (list? '()) #t)
+(assert-shallow (list? '(a . b)) #f)
+(assert-shallow (list? (let ((x (list 'a)))
+    (set-cdr! x x)
+    (list? x))) #f)
+
+(assert-deep (list 'a (+ 3 4) 'c) '(a 7 c))
+(assert-deep (list) '())
+
+(assert-shallow (length '(a b c)) 3)
+(assert-shallow (length '(a (b) (c d e))) 3)
+(assert-shallow (length '()) 0)
+
+(assert-deep (append '(x) '(y)) '(x y))
+(assert-deep (append '(a) '(b c d)) '(a b c d))
+(assert-deep (append '(a (b)) '((c))) '(a (b) (c)))
+(assert-deep (append '(a b) '(c . d)) '(a b c . d))
+(assert-deep (append '() 'a) 'a)
+
+(assert-deep (memq 'a '(a b c)) '(a b c))
+(assert-deep (memq 'b '(a b c)) '(b c))
+(assert-deep (memq 'd '(a b c)) #f)
+(assert-deep (memq (list 'a) '(b (a) c)) #f)
+
+; cannot manipulate cyclic reference such as below code
+; (let ((x (list 'a 'b 'c)))
+;   (set-cdr! (cdr (cdr x)) x)
+;   x) 

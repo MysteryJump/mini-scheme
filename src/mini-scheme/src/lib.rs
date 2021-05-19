@@ -1,4 +1,5 @@
 #![feature(bool_to_option)]
+#![feature(bindings_after_at)]
 
 use std::sync::{atomic::AtomicBool, Arc};
 

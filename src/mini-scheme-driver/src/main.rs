@@ -1,5 +1,3 @@
-#![feature(async_closure)]
-
 use std::{env, sync::Arc};
 use std::{io::Write, process::exit};
 
@@ -42,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         do_debug();
     } else if let Some(path) = path {
         mini_scheme::execute(
-            &std::fs::read_to_string(path).unwrap(),
+            &std::fs::read_to_string(path)?,
             Arc::new(|x| println!("{}", x)),
         );
     } else {
@@ -184,7 +182,7 @@ fn do_debug() {
           (car (cdr (cdr cc)))
           (define lss '(2 2 3 3 (3 . 5)))
           (length lss)
-          (memq lss 3)
+          (memq 3 lss)
           (last '(3 . ()))
           (append '(3 9 (3 . 3)) '(3))
           (set-car! lss 5)

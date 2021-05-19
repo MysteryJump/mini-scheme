@@ -154,6 +154,7 @@ pub struct Env {
     reactive_properties: Option<Arc<Mutex<Reactive>>>,
     is_newborn: bool,
     str_consts_pairs: Mutex<HashMap<String, u128>>,
+    list_store: Mutex<HashMap<u128, List>>,
 }
 
 #[derive(Debug)]
@@ -213,6 +214,7 @@ impl Env {
             reactive_properties: None,
             is_newborn: true,
             str_consts_pairs: Mutex::new(HashMap::new()),
+            list_store: Mutex::new(HashMap::new()),
         }
     }
     fn create_and_enter_flame(&mut self) {
@@ -243,6 +245,10 @@ impl Env {
             };
         }
 
+        if let ExecutionResult::List(l @ List::Cons(_, _, rf)) = &value {
+            self.list_store.lock().unwrap().insert(*rf, l.clone());
+        }
+
         let mut cdefs = self.current_flame.defineds.lock().unwrap();
 
         if cdefs.contains_key(name) {
@@ -266,6 +272,9 @@ impl Env {
         let mut cdefs = self.current_flame.defineds.lock().unwrap();
         if let Some(s) = self.builtins.get(name) {
             self.used_builtins.lock().unwrap().insert(s);
+        }
+        if let ExecutionResult::List(l @ List::Cons(_, _, rf)) = &value {
+            self.list_store.lock().unwrap().insert(*rf, l.clone());
         }
         cdefs.insert(name.to_string(), value);
     }
@@ -291,13 +300,32 @@ impl Env {
             while let Some(parent) = &c.parent.clone() {
                 let cdefs = parent.defineds.lock().unwrap();
                 if cdefs.contains_key(name) {
-                    return Some(cdefs[name].clone());
+                    let r = cdefs[name].clone();
+                    let r = if let ExecutionResult::List(List::Cons(_, _, rf)) = &r {
+                        if let Some(l) = self.list_store.lock().unwrap().get(rf).cloned() {
+                            Some(ExecutionResult::List(l))
+                        } else {
+                            Some(r)
+                        }
+                    } else {
+                        Some(r)
+                    };
+                    return r;
                 }
                 c = parent.clone();
             }
             None
         } else {
-            Some(cdefs[name].clone())
+            let r = cdefs[name].clone();
+            if let ExecutionResult::List(List::Cons(_, _, rf)) = &r {
+                if let Some(l) = self.list_store.lock().unwrap().get(rf).cloned() {
+                    Some(ExecutionResult::List(l))
+                } else {
+                    Some(r)
+                }
+            } else {
+                Some(r)
+            }
         }
     }
     pub fn get_const_str_addr(&self, name: String) -> u128 {
@@ -354,6 +382,7 @@ impl Clone for Env {
             used_builtins: Mutex::new(self.used_builtins.lock().unwrap().clone()),
             builtins: self.builtins.clone(),
             toplevel: self.toplevel.clone(),
+            list_store: Mutex::new(self.list_store.lock().unwrap().clone()),
         }
     }
 }
@@ -1350,7 +1379,7 @@ impl List {
         }
     }
 
-    pub fn memq(target: List, result: &ExecutionResult) -> Result<List, ()> {
+    pub fn memq(target: List, result: &ExecutionResult) -> Result<Option<List>, ()> {
         if target.is_list() {
             Ok(Self::memq_(target, result))
         } else {
@@ -1358,18 +1387,14 @@ impl List {
         }
     }
 
-    fn memq_(target: List, result: &ExecutionResult) -> List {
+    fn memq_(target: List, result: &ExecutionResult) -> Option<List> {
         if target.car_ref().eq(result) {
-            target
+            Some(target)
+        } else if let ExecutionResult::List(l @ List::Cons(_, _, _)) = target.cdr() {
+            Self::memq_(l, result)
         } else {
-            Self::memq_(
-                if let ExecutionResult::List(l) = target.cdr() {
-                    l
-                } else {
-                    panic!()
-                },
-                result,
-            )
+            // List::Nil
+            None
         }
     }
 
@@ -1574,7 +1599,8 @@ fn execute_list_operation(operation_kind: ListOperationKind, vals: &[ExecutionRe
                     return Err("expected type is list?, but actually type is diffrent".to_string());
                 };
                 match List::memq(list, &vals[0]) {
-                    Ok(o) => Ok(ExecutionResult::List(o)),
+                    Ok(Some(o)) => Ok(ExecutionResult::List(o)),
+                    Ok(None) => Ok(ExecutionResult::Bool(false)),
                     Err(_) => {
                         Err("expected type is list?, but actually type is diffrent".to_string())
                     }
@@ -1617,11 +1643,50 @@ fn execute_list_operation(operation_kind: ListOperationKind, vals: &[ExecutionRe
                     if !l.is_list() {
                         return Err("expected type in first argument is list?, but actually type is diffrent".to_string());
                     }
+                    let l_is_null = matches!(l, List::Nil);
                     let mut next = l.clone();
-                    for item in &vals[1..] {
-                        next = List::append(next, item.clone());
+
+                    if l_is_null {
+                        let mut cur = None;
+                        let mut list_cur = None;
+                        let mut null_mode = true;
+                        for item in &vals[1..] {
+                            if null_mode {
+                                if !matches!(item, ExecutionResult::List(List::Nil)) {
+                                    match item {
+                                        ExecutionResult::List(l) => {
+                                            list_cur = Some(l.clone());
+                                        }
+                                        _ => {
+                                            cur = Some(item);
+                                        }
+                                    }
+                                    null_mode = false;
+                                }
+                            } else if let Some(lscur) = list_cur {
+                                list_cur = Some(List::append(lscur, item.clone()));
+                            } else if cur.is_some() {
+                                return Err(
+                                    "expected type is list?, but actually type is not list?"
+                                        .to_string(),
+                                );
+                            }
+                        }
+                        if null_mode {
+                            Ok(ExecutionResult::List(List::Nil))
+                        } else if let Some(list_cur) = list_cur {
+                            Ok(ExecutionResult::List(list_cur))
+                        } else if let Some(cur) = cur {
+                            Ok(cur.clone())
+                        } else {
+                            panic!()
+                        }
+                    } else {
+                        for item in &vals[1..] {
+                            next = List::append(next, item.clone());
+                        }
+                        Ok(ExecutionResult::List(next))
                     }
-                    Ok(ExecutionResult::List(next))
                 } else {
                     Err(
                         "expected type in first argument is list?, but actually type is diffrent"
