@@ -159,7 +159,7 @@ pub struct Env {
 #[derive(Debug)]
 pub struct Flame {
     parent: Option<Arc<Flame>>,
-    defineds: Mutex<Vec<(String, ExecutionResult)>>,
+    defineds: Mutex<HashMap<String, ExecutionResult>>,
 }
 
 impl Clone for Flame {
@@ -245,33 +245,16 @@ impl Env {
 
         let mut cdefs = self.current_flame.defineds.lock().unwrap();
 
-        let current = cdefs
-            .iter()
-            .filter(|x| x.0 != name)
-            .cloned()
-            .collect::<Vec<_>>();
-        if current.len() != cdefs.len() {
-            let mut current = current;
-            current.push((name.to_string(), value));
-            cdefs.clear();
-            cdefs.append(&mut current);
+        if cdefs.contains_key(name) {
+            cdefs.insert(name.to_string(), value);
             Ok(())
         } else {
             let mut parent = self.current_flame.clone();
             while let Some(s) = parent.parent.clone() {
                 let mut cdefs = s.defineds.lock().unwrap();
 
-                let current = cdefs
-                    .iter()
-                    .filter(|x| x.0 != name)
-                    .cloned()
-                    .collect::<Vec<_>>();
-
-                if current.len() != cdefs.len() {
-                    let mut current = current;
-                    current.push((name.to_string(), value));
-                    cdefs.clear();
-                    cdefs.append(&mut current);
+                if cdefs.contains_key(name) {
+                    cdefs.insert(name.to_string(), value);
                     return Ok(());
                 }
                 parent = s.clone();
@@ -281,21 +264,10 @@ impl Env {
     }
     pub fn add_define(&self, name: &str, value: ExecutionResult) {
         let mut cdefs = self.current_flame.defineds.lock().unwrap();
-        let filtered = cdefs.clone();
-        let filtered = filtered.iter().filter(|x| x.0 != name).collect::<Vec<_>>();
-        if !filtered.is_empty() {
-            cdefs.clear();
-            cdefs.append(
-                &mut filtered
-                    .iter()
-                    .map(|x| (x.0.clone(), x.1.clone()))
-                    .collect::<Vec<_>>(),
-            );
-        }
         if let Some(s) = self.builtins.get(name) {
             self.used_builtins.lock().unwrap().insert(s);
         }
-        cdefs.push((name.to_string(), value))
+        cdefs.insert(name.to_string(), value);
     }
     pub fn add_defines(&self, pairs: Vec<(&str, ExecutionResult)>) {
         pairs
@@ -313,22 +285,19 @@ impl Env {
                 return Some(result);
             }
         }
-
         let cdefs = self.current_flame.defineds.lock().unwrap();
-        let filtered = cdefs.iter().filter(|x| x.0 == name).collect::<Vec<_>>();
-        if filtered.is_empty() {
+        if !cdefs.contains_key(name) {
             let mut c = self.current_flame.clone();
             while let Some(parent) = &c.parent.clone() {
                 let cdefs = parent.defineds.lock().unwrap();
-                let filtered = cdefs.iter().filter(|x| x.0 == name).collect::<Vec<_>>();
-                if !filtered.is_empty() {
-                    return Some(filtered[0].1.clone());
+                if cdefs.contains_key(name) {
+                    return Some(cdefs[name].clone());
                 }
                 c = parent.clone();
             }
             None
         } else {
-            Some(filtered[0].1.clone())
+            Some(cdefs[name].clone())
         }
     }
     pub fn get_const_str_addr(&self, name: String) -> u128 {
@@ -355,7 +324,7 @@ impl Flame {
     fn new(parent: Option<Arc<Flame>>) -> Self {
         Self {
             parent,
-            defineds: Mutex::new(Vec::new()),
+            defineds: Mutex::new(HashMap::new()),
         }
     }
 
@@ -500,6 +469,7 @@ impl Interpreter {
 
     fn execute_expr(&mut self, mut expr: Expr) -> EResult {
         let mut tail_depth = 0;
+        let mut saved_flame = None;
         loop {
             if let Some(tk) = self.env.cancellation_token.as_ref() {
                 if tk.load(Ordering::Relaxed) {
@@ -523,14 +493,18 @@ impl Interpreter {
                     let result_func = self.execute_expr(*func.clone())?;
                     match result_func {
                         ExecutionResult::Func(arg_func, body, _, flame) => {
-                            // self.env.push_flame(flame);
                             let r = match arg_func {
                                 Arg::Id(id) => {
                                     if arg_apply.len() != 1 {
                                         Err("Args count is not match".to_string())
                                     } else {
-                                        self.env.create_and_enter_flame();
                                         let r = self.execute_expr(arg_apply[0].clone())?;
+                                        if saved_flame.is_none() {
+                                            saved_flame = Some(self.env.replace_flame(flame));
+                                        } else {
+                                            self.env.replace_flame(flame);
+                                        }
+                                        self.env.create_and_enter_flame();
                                         self.env.add_define(&id, r);
                                         let result = self.execute_body_with_tail(body)?;
                                         expr = result;
@@ -574,6 +548,11 @@ impl Interpreter {
                                             }
                                             let list = ExecutionResult::List((rests, None).into());
 
+                                            if saved_flame.is_none() {
+                                                saved_flame = Some(self.env.replace_flame(flame));
+                                            } else {
+                                                self.env.replace_flame(flame);
+                                            }
                                             self.env.create_and_enter_flame();
                                             for (name, result) in args {
                                                 self.env.add_define(name, result.clone()?);
@@ -589,7 +568,6 @@ impl Interpreter {
                                     } else if ids.len() != arg_apply.len() {
                                         Err("Args count is not match".to_string())
                                     } else {
-                                        self.env.create_and_enter_flame();
                                         let mut binds = Vec::new();
                                         for (key, result) in
                                             ids.iter().zip(arg_apply).map(|(name, expr)| {
@@ -598,6 +576,12 @@ impl Interpreter {
                                         {
                                             binds.push((key as &str, result?));
                                         }
+                                        if saved_flame.is_none() {
+                                            saved_flame = Some(self.env.replace_flame(flame));
+                                        } else {
+                                            self.env.replace_flame(flame);
+                                        }
+                                        self.env.create_and_enter_flame();
                                         self.env.add_defines(binds);
                                         let result = self.execute_body_with_tail(body)?;
                                         expr = result;
@@ -606,7 +590,9 @@ impl Interpreter {
                                     }
                                 }
                             };
-                            // self.env.pop_flame();
+                            if let Some(flame) = saved_flame.clone() {
+                                self.env.replace_flame(flame);
+                            }
                             r
                         }
                         #[cfg(feature = "concurrent")]
@@ -924,6 +910,7 @@ impl Interpreter {
                     }
                 }
                 Expr::Cond(cond) => {
+                    let mut res = None;
                     for (con_expr, exprs) in cond.0.clone() {
                         let result = self.execute_expr(con_expr)?;
                         if !matches!(result, ExecutionResult::Bool(false)) {
@@ -931,10 +918,13 @@ impl Interpreter {
                                 .iter()
                                 .map(|x| self.execute_expr(x.clone()))
                                 .collect::<Result<Vec<_>, _>>()?;
-                            return Ok(result.last().unwrap().clone());
+                            res = Some(result.last().unwrap().clone());
+                            break;
                         }
                     }
-                    if let Some(els) = cond.1.clone() {
+                    if let Some(res) = res {
+                        Ok(res)
+                    } else if let Some(els) = cond.1.clone() {
                         let body = Body(Vec::new(), els.clone());
                         let result = self.execute_body_with_tail(body)?;
                         expr = result;
@@ -1030,10 +1020,14 @@ impl Interpreter {
                     continue;
                 }
             };
-            for _ in 0..tail_depth {
-                self.env.break_flame();
+            if let Some(saved_flame) = saved_flame {
+                self.env.replace_flame(saved_flame);
+            } else {
+                for _ in 0..tail_depth {
+                    self.env.break_flame();
+                }
             }
-            // self.env.pop_flame();
+
             return r;
         }
     }

@@ -1,4 +1,4 @@
-(define (assert-shallow left right) 
+(define (assert-shallow left right)
     (if (eq? left right) '() (begin (display "Assertion Error: left,right is") (display left) (display right) (display "")))
 )
 (define (assert-deep left right)
@@ -12,12 +12,12 @@
 (assert-shallow ((lambda (x) (+ x x)) 4) 8)
 
 (define reverse-subtract
-    (lambda (x y) (- y x)))
+   (lambda (x y) (- y x)))
 (assert-shallow (reverse-subtract 7 10) 3)
 
 (define add4
-    (let ((x 4))
-    (lambda (y) (+ x y))))
+   (let ((x 4))
+   (lambda (y) (+ x y))))
 (assert-shallow (add4 6) 10)
 (assert-shallow x 28)
 
@@ -32,6 +32,7 @@
 
 (define x 2)
 (assert-shallow (+ x 1) 3)
+
 (set! x 4)
 (assert-shallow (+ x 1) 5)
 
@@ -146,12 +147,13 @@
 (assert-shallow (boolean? 0) #f)
 (assert-shallow (boolean? '()) #f)
 
-;(define x (list 'a 'b 'c))
-;(define y x)
-;(assert-deep y '(a b c))
-;(assert-shallow (list? y) #t)
-;(set-cdr! x 4)
-;(assert-deep x '(a . 4))
-;(assert-shallow (eq? x y) #t)
-;(set-cdr! x x)
-;(assert-shallow (list? x) #f)
+(define x (list 'a 'b 'c))
+(define y x)
+(assert-deep y '(a b c))
+(assert-shallow (list? y) #t)
+(set-cdr! x 4)
+(assert-deep x '(a . 4))
+(assert-shallow (eq? x y) #t)
+; (assert-shallow (equal? x y) #t) ; Fail
+(set-cdr! x x)
+(assert-shallow (list? x) #f)

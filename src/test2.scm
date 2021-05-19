@@ -19,11 +19,11 @@
 (define-and-run-actor (isEvenActor2 arg) (isEven arg))
 (define-and-run-actor (isEvenActor3 arg) (isEven arg))
 
-(define a1 (send-message isEvenActor1 10000))
-(define a2 (send-message isEvenActor2 10001))
-(define a3 (send-message isEvenActor3 10002))
+(define a1 (send-message isEvenActor1 1000000))
+(define a2 (send-message isEvenActor2 1000001))
+(define a3 (send-message isEvenActor3 1000002))
 
-(display (string-append "from normal " (isEven 9999)))
+(display (string-append "from normal " (isEven 999999)))
 
 (display (string-append "from a1 " (await a1)))
 (display (string-append "from a2 " (await a2)))
