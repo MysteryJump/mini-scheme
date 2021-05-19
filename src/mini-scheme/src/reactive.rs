@@ -101,7 +101,7 @@ impl Reactive {
             } else {
                 panic!()
             };
-            env.add_define(id.clone(), r.clone());
+            env.add_define(id, r.clone());
             values.insert(id.clone(), r);
         }
 
@@ -122,7 +122,7 @@ impl Reactive {
                     panic!();
                 };
             env = inter.get_env();
-            env.add_define(sort.clone(), result.clone());
+            env.add_define(sort, result.clone());
             values.insert(sort.clone(), result);
         }
         values
@@ -134,7 +134,7 @@ impl Reactive {
         }
         let deps = &self.dependency_pairs[id];
         let mut env = Env::new(Arc::new(|_| {}), None);
-        env.add_define(id.to_string(), value.clone());
+        env.add_define(id, value.clone());
         self.before_values.insert(id.to_string(), value);
         for item in &self.topo_order {
             if id == item {
@@ -144,13 +144,13 @@ impl Reactive {
                 let r = ipr.execute_toplevel(TopLevel::Expr(self.flow_exprs[item].clone()));
                 env = ipr.get_env();
                 if let either::Either::Left(Ok(r)) = r {
-                    env.add_define(item.to_string(), r.clone());
+                    env.add_define(item, r.clone());
                     self.before_values.insert(item.clone(), r.clone()).unwrap();
                 } else {
                     panic!();
                 }
             } else {
-                env.add_define(item.to_string(), self.before_values[item].clone());
+                env.add_define(item, self.before_values[item].clone());
             }
         }
         Ok(())

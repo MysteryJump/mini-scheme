@@ -26,7 +26,7 @@
     (display (await (send-message isEven (+ num 12))))
 )
 
-(define actorId (send-message isEven 50000))
+(define actorId (send-message isEven 20000))
 (display actorId)
 
 (display (let loop ((numbers '(3 -2 1 6 -5)) (nonneg '()) (neg '()))

@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
     sync::{
-        atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
 };
@@ -30,10 +30,10 @@ use crate::{
 
 pub type EResult = Result<ExecutionResult, String>;
 
-macro_rules! add_embfunc {
+macro_rules! add_builtin {
     ($map:ident,$($name:expr),*) => {
         $(
-            $map.insert($name.to_string(), ExecutionResult::EmbeddedFunc($name));
+            $map.insert($name);
         )*
     };
 }
@@ -145,161 +145,48 @@ impl ActorMap {
 }
 
 pub struct Env {
-    defineds: Mutex<Vec<HashMap<String, (ExecutionResult, i32)>>>,
-    current_depth: AtomicU32,
-    str_consts_pairs: Mutex<HashMap<String, u128>>,
-    logger: Arc<dyn Fn(String) + Sync + Send>,
+    toplevel: Arc<Flame>,
+    current_flame: Arc<Flame>,
+    used_builtins: Mutex<HashSet<&'static str>>,
+    builtins: HashSet<&'static str>,
+    stdout: Arc<dyn Fn(String) + Sync + Send>,
     cancellation_token: Option<Arc<AtomicBool>>,
     reactive_properties: Option<Arc<Mutex<Reactive>>>,
     is_newborn: bool,
-    flames: Mutex<Option<HashMap<String, (ExecutionResult, i32)>>>,
-    pushed_flame_depth: AtomicI32,
+    str_consts_pairs: Mutex<HashMap<String, u128>>,
+}
+
+#[derive(Debug)]
+pub struct Flame {
+    parent: Option<Arc<Flame>>,
+    defineds: Mutex<Vec<(String, ExecutionResult)>>,
+}
+
+impl Clone for Flame {
+    fn clone(&self) -> Self {
+        Self {
+            parent: self.parent.clone(),
+            defineds: Mutex::new(self.defineds.lock().unwrap().clone()),
+        }
+    }
 }
 
 impl Env {
     pub fn new(
-        logger: Arc<dyn Fn(String) + Sync + Send>,
+        stdout: Arc<dyn Fn(String) + Sync + Send>,
         cancellation_token: Option<Arc<AtomicBool>>,
     ) -> Self {
-        let builtins = Self::get_embedded_func_names();
-        Self {
-            defineds: {
-                let map = vec![builtins
-                    .iter()
-                    .map(|x| (x.0.clone(), (x.1.clone(), 0)))
-                    .collect()];
-                Mutex::new(map)
-            },
-            current_depth: AtomicU32::new(0),
-            str_consts_pairs: Mutex::new(HashMap::new()),
-            logger,
-            cancellation_token,
-            reactive_properties: None,
-            is_newborn: true,
-            flames: Mutex::new(None),
-            pushed_flame_depth: AtomicI32::new(-1),
-        }
-    }
-
-    pub fn add_define(&self, name: String, result: ExecutionResult) {
-        let cdepth = self.current_depth.load(Ordering::SeqCst);
-        self.defineds
-            .lock()
-            .unwrap()
-            .get_mut(cdepth as usize)
-            .unwrap()
-            .insert(name, (result, cdepth as i32));
-    }
-
-    pub fn add_defines(&self, pairs: Vec<(String, ExecutionResult)>) {
-        for (name, result) in pairs {
-            self.add_define(name, result);
-        }
-    }
-
-    pub fn get_expr_by_def_name(&self, name: String) -> Option<ExecutionResult> {
-        let cdepth = self.current_depth.load(Ordering::SeqCst);
-
-        let rf = self.defineds.lock().unwrap();
-        let current_env = rf[cdepth as usize].get(&name).cloned();
-        let flame_env = self.flames.lock().unwrap().as_ref().cloned();
-        let flame_env = flame_env.and_then(|x| x.get(&name).cloned());
-        match (current_env, flame_env) {
-            (None, None) => {
-                if let Some(r) = &self.reactive_properties {
-                    r.lock().unwrap().get_value(&name)
-                } else {
-                    None
-                }
-            }
-            (None, Some(s)) => Some(s.0),
-            (Some(s), None) => Some(s.0),
-            (Some(cenv), Some(fenv)) => {
-                if cenv.1 >= fenv.1 {
-                    Some(cenv.0)
-                } else {
-                    Some(fenv.0)
-                }
-            }
-        }
-    }
-
-    pub fn enter_block(&self) {
-        let ndepth = self.current_depth.load(Ordering::SeqCst) + 1;
-        let next = self.defineds.lock().unwrap().last().unwrap().clone();
-        self.defineds.lock().unwrap().push(next);
-        self.current_depth.store(ndepth, Ordering::SeqCst);
-    }
-
-    pub fn exit_block(&self) {
-        let cdepth = self.current_depth.load(Ordering::SeqCst);
-        self.defineds.lock().unwrap().pop();
-        self.current_depth.store(cdepth - 1, Ordering::SeqCst);
-    }
-
-    pub fn get_current_flame(&self) -> HashMap<String, (ExecutionResult, i32)> {
-        self.defineds.lock().unwrap().last().unwrap().clone()
-    }
-
-    pub fn push_flame(&self, flame: HashMap<String, (ExecutionResult, i32)>) {
-        self.flames.lock().unwrap().replace(flame);
-        self.pushed_flame_depth.store(
-            self.current_depth.load(Ordering::SeqCst) as i32,
-            Ordering::SeqCst,
+        let mut builtins = HashSet::new();
+        add_builtin!(
+            builtins, "number?", "integer?", "+", "-", "*", "/", "=", "<", "<=", ">", ">="
         );
-    }
-
-    pub fn pop_flame(&self) {
-        let pushed_depth = self.pushed_flame_depth.load(Ordering::SeqCst);
-        if pushed_depth >= 0 && pushed_depth as u32 >= self.current_depth.load(Ordering::SeqCst) {
-            self.flames.lock().unwrap().take();
-        }
-    }
-
-    pub fn update_entry(
-        &self,
-        name: String,
-        result: ExecutionResult,
-    ) -> Result<ExecutionResult, ()> {
-        let cdepth = self.current_depth.load(Ordering::SeqCst);
-        let current_name = {
-            let rf = self.defineds.lock().unwrap();
-            rf[cdepth as usize].get(&name).cloned()
-        };
-        if let Some((r, target_depth)) = current_name {
-            for i in target_depth..=(cdepth as i32) {
-                self.defineds
-                    .lock()
-                    .unwrap()
-                    .get_mut(i as usize)
-                    .unwrap()
-                    .insert(name.clone(), (result.clone(), target_depth));
-            }
-            Ok(r)
-        } else if let Some(r) = &self.reactive_properties {
-            let lock = r.clone();
-            let mut lock = lock.lock().unwrap();
-            lock.update_value(&name, result)?;
-            if let Some(r) = lock.get_value(&name) {
-                Ok(r)
-            } else {
-                Err(())
-            }
-        } else {
-            Err(())
-        }
-    }
-
-    pub fn get_embedded_func_names() -> HashMap<String, ExecutionResult> {
-        let mut map = HashMap::new();
-        add_embfunc!(map, "number?", "integer?", "+", "-", "*", "/", "=", "<", "<=", ">", ">=");
-        add_embfunc!(
-            map, "null?", "pair?", "list?", "symbol?", "car", "cdr", "cons", "list", "length",
+        add_builtin!(
+            builtins, "null?", "pair?", "list?", "symbol?", "car", "cdr", "cons", "list", "length",
             "memq", "last", "append", "set-car!", "set-cdr!"
         );
-        add_embfunc!(map, "boolean?", "not");
-        add_embfunc!(
-            map,
+        add_builtin!(builtins, "boolean?", "not");
+        add_builtin!(
+            builtins,
             "string?",
             "string-append",
             "symbol->string",
@@ -307,16 +194,143 @@ impl Env {
             "string->number",
             "number->string"
         );
-        add_embfunc!(map, "procedure?");
-        add_embfunc!(map, "eq?", "neq?", "equal?");
-        add_embfunc!(map, "load");
-        add_embfunc!(map, "display");
+        add_builtin!(builtins, "procedure?");
+        add_builtin!(builtins, "eq?", "neq?", "equal?");
+        add_builtin!(builtins, "load");
+        add_builtin!(builtins, "display");
 
         #[cfg(feature = "concurrent")]
-        add_embfunc!(map, "send-message", "get-result", "await", "sleep");
-        map
-    }
+        add_builtin!(builtins, "send-message", "get-result", "await", "sleep");
 
+        let toplevel = Arc::new(Flame::new(None));
+        Self {
+            current_flame: toplevel.clone(),
+            toplevel,
+            used_builtins: Mutex::new(HashSet::new()),
+            builtins,
+            stdout,
+            cancellation_token,
+            reactive_properties: None,
+            is_newborn: true,
+            str_consts_pairs: Mutex::new(HashMap::new()),
+        }
+    }
+    fn create_and_enter_flame(&mut self) {
+        let flame = Flame::create_child(self.current_flame.clone());
+        self.current_flame = Arc::new(flame);
+    }
+    fn break_flame(&mut self) {
+        let parent = self.current_flame.parent.as_ref().unwrap();
+        self.current_flame = parent.clone();
+    }
+    fn get_flame(&self) -> Arc<Flame> {
+        self.current_flame.clone()
+    }
+    fn replace_flame(&mut self, flame: Arc<Flame>) -> Arc<Flame> {
+        let current = self.current_flame.clone();
+        self.current_flame = flame;
+        current
+    }
+    fn update_define(&self, name: &str, value: ExecutionResult) -> Result<(), ()> {
+        if let Some(react) = &self.reactive_properties {
+            if react
+                .lock()
+                .unwrap()
+                .update_value(name, value.clone())
+                .is_ok()
+            {
+                return Ok(());
+            };
+        }
+
+        let mut cdefs = self.current_flame.defineds.lock().unwrap();
+
+        let current = cdefs
+            .iter()
+            .filter(|x| x.0 != name)
+            .cloned()
+            .collect::<Vec<_>>();
+        if current.len() != cdefs.len() {
+            let mut current = current;
+            current.push((name.to_string(), value));
+            cdefs.clear();
+            cdefs.append(&mut current);
+            Ok(())
+        } else {
+            let mut parent = self.current_flame.clone();
+            while let Some(s) = parent.parent.clone() {
+                let mut cdefs = s.defineds.lock().unwrap();
+
+                let current = cdefs
+                    .iter()
+                    .filter(|x| x.0 != name)
+                    .cloned()
+                    .collect::<Vec<_>>();
+
+                if current.len() != cdefs.len() {
+                    let mut current = current;
+                    current.push((name.to_string(), value));
+                    cdefs.clear();
+                    cdefs.append(&mut current);
+                    return Ok(());
+                }
+                parent = s.clone();
+            }
+            Err(())
+        }
+    }
+    pub fn add_define(&self, name: &str, value: ExecutionResult) {
+        let mut cdefs = self.current_flame.defineds.lock().unwrap();
+        let filtered = cdefs.clone();
+        let filtered = filtered.iter().filter(|x| x.0 != name).collect::<Vec<_>>();
+        if !filtered.is_empty() {
+            cdefs.clear();
+            cdefs.append(
+                &mut filtered
+                    .iter()
+                    .map(|x| (x.0.clone(), x.1.clone()))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        if let Some(s) = self.builtins.get(name) {
+            self.used_builtins.lock().unwrap().insert(s);
+        }
+        cdefs.push((name.to_string(), value))
+    }
+    pub fn add_defines(&self, pairs: Vec<(&str, ExecutionResult)>) {
+        pairs
+            .into_iter()
+            .for_each(|(name, value)| self.add_define(name, value));
+    }
+    pub fn get_define(&self, name: &str) -> Option<ExecutionResult> {
+        if let Some(s) = self.builtins.get(name) {
+            if !self.used_builtins.lock().unwrap().contains(name) {
+                return Some(ExecutionResult::EmbeddedFunc(s));
+            }
+        }
+        if let Some(react) = &self.reactive_properties {
+            if let Some(result) = react.lock().unwrap().get_value(name) {
+                return Some(result);
+            }
+        }
+
+        let cdefs = self.current_flame.defineds.lock().unwrap();
+        let filtered = cdefs.iter().filter(|x| x.0 == name).collect::<Vec<_>>();
+        if filtered.is_empty() {
+            let mut c = self.current_flame.clone();
+            while let Some(parent) = &c.parent.clone() {
+                let cdefs = parent.defineds.lock().unwrap();
+                let filtered = cdefs.iter().filter(|x| x.0 == name).collect::<Vec<_>>();
+                if !filtered.is_empty() {
+                    return Some(filtered[0].1.clone());
+                }
+                c = parent.clone();
+            }
+            None
+        } else {
+            Some(filtered[0].1.clone())
+        }
+    }
     pub fn get_const_str_addr(&self, name: String) -> u128 {
         #[allow(clippy::map_entry)]
         if self.str_consts_pairs.lock().unwrap().contains_key(&name) {
@@ -327,19 +341,33 @@ impl Env {
             addr
         }
     }
-
     pub fn set_reactive(&mut self, reactive: Arc<Mutex<Reactive>>) {
         if self.reactive_properties.is_none() {
             self.reactive_properties = Some(reactive);
         }
+    }
+    pub fn replace_to_toplevel(&mut self) {
+        self.current_flame = self.toplevel.clone();
+    }
+}
+
+impl Flame {
+    fn new(parent: Option<Arc<Flame>>) -> Self {
+        Self {
+            parent,
+            defineds: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn create_child(self: Arc<Self>) -> Self {
+        Self::new(Some(self))
     }
 }
 
 impl std::fmt::Debug for Env {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
         f.debug_struct("Env")
-            .field("defineds", &self.defineds)
-            .field("current_depth", &self.current_depth)
+            .field("current_flame", &self.current_flame)
             .field("str_consts_pairs", &self.str_consts_pairs)
             .finish()
     }
@@ -348,15 +376,15 @@ impl std::fmt::Debug for Env {
 impl Clone for Env {
     fn clone(&self) -> Self {
         Self {
-            defineds: Mutex::new(self.defineds.lock().unwrap().clone()),
-            current_depth: AtomicU32::new(self.current_depth.load(Ordering::SeqCst)),
             str_consts_pairs: Mutex::new(self.str_consts_pairs.lock().unwrap().clone()),
-            logger: self.logger.clone(),
+            stdout: self.stdout.clone(),
             cancellation_token: self.cancellation_token.clone(),
             reactive_properties: self.reactive_properties.clone(),
             is_newborn: self.is_newborn,
-            flames: Mutex::new(self.flames.lock().unwrap().clone()),
-            pushed_flame_depth: AtomicI32::new(self.pushed_flame_depth.load(Ordering::SeqCst)),
+            current_flame: self.current_flame.clone(),
+            used_builtins: Mutex::new(self.used_builtins.lock().unwrap().clone()),
+            builtins: self.builtins.clone(),
+            toplevel: self.toplevel.clone(),
         }
     }
 }
@@ -398,7 +426,7 @@ impl Interpreter {
     }
 
     pub fn execute_toplevel(&mut self, toplevel: TopLevel) -> Either<EResult, Vec<EResult>> {
-        self.env.current_depth.store(0, Ordering::SeqCst);
+        self.env.replace_to_toplevel();
         let r = match toplevel {
             TopLevel::Expr(e) => Either::Left(self.execute_expr(e)),
             TopLevel::Define(def) => Either::Left(self.execute_define(def)),
@@ -483,27 +511,27 @@ impl Interpreter {
                 Expr::Const(c) => Ok(c.clone().into_with_env(&self.env)),
                 Expr::Id(id) => self
                     .env
-                    .get_expr_by_def_name(id.clone())
+                    .get_define(id)
                     .ok_or_else(|| "Cannot find such name.".to_string()),
                 Expr::Lambda(arg, body) => Ok(ExecutionResult::Func(
                     arg.clone(),
                     body.clone(),
                     Uuid::new_v4().as_u128(),
-                    self.env.get_current_flame(),
+                    self.env.get_flame(),
                 )),
                 Expr::Apply(func, arg_apply) => {
                     let result_func = self.execute_expr(*func.clone())?;
                     match result_func {
                         ExecutionResult::Func(arg_func, body, _, flame) => {
-                            self.env.push_flame(flame);
+                            // self.env.push_flame(flame);
                             let r = match arg_func {
                                 Arg::Id(id) => {
                                     if arg_apply.len() != 1 {
                                         Err("Args count is not match".to_string())
                                     } else {
-                                        self.env.enter_block();
+                                        self.env.create_and_enter_flame();
                                         let r = self.execute_expr(arg_apply[0].clone())?;
-                                        self.env.add_define(id, r);
+                                        self.env.add_define(&id, r);
                                         let result = self.execute_body_with_tail(body)?;
                                         expr = result;
                                         tail_depth += 1;
@@ -546,13 +574,12 @@ impl Interpreter {
                                             }
                                             let list = ExecutionResult::List((rests, None).into());
 
-                                            self.env.enter_block();
+                                            self.env.create_and_enter_flame();
                                             for (name, result) in args {
-                                                self.env
-                                                    .add_define(name.to_string(), result.clone()?);
+                                                self.env.add_define(name, result.clone()?);
                                             }
 
-                                            self.env.add_define(rest, list);
+                                            self.env.add_define(&rest, list);
 
                                             let result = self.execute_body_with_tail(body)?;
                                             expr = result;
@@ -562,14 +589,14 @@ impl Interpreter {
                                     } else if ids.len() != arg_apply.len() {
                                         Err("Args count is not match".to_string())
                                     } else {
-                                        self.env.enter_block();
+                                        self.env.create_and_enter_flame();
                                         let mut binds = Vec::new();
                                         for (key, result) in
                                             ids.iter().zip(arg_apply).map(|(name, expr)| {
                                                 (name, self.execute_expr(expr.clone()))
                                             })
                                         {
-                                            binds.push((key.to_string(), result?));
+                                            binds.push((key as &str, result?));
                                         }
                                         self.env.add_defines(binds);
                                         let result = self.execute_body_with_tail(body)?;
@@ -579,7 +606,7 @@ impl Interpreter {
                                     }
                                 }
                             };
-                            self.env.pop_flame();
+                            // self.env.pop_flame();
                             r
                         }
                         #[cfg(feature = "concurrent")]
@@ -680,7 +707,7 @@ impl Interpreter {
                                     )?;
                                     if let Expr::Id(id) = arg_apply[0].clone() {
                                         self.env
-                                            .update_entry(id, result)
+                                            .update_define(&id, result)
                                             .map_err(|_| "Cannot find such name.".to_string())?;
                                     }
                                     Ok(ExecutionResult::Unit)
@@ -692,7 +719,7 @@ impl Interpreter {
                                     )?;
                                     if let Expr::Id(id) = arg_apply[0].clone() {
                                         self.env
-                                            .update_entry(id, result)
+                                            .update_define(&id, result)
                                             .map_err(|_| "Cannot find such name.".to_string())?;
                                     }
                                     Ok(ExecutionResult::Unit)
@@ -705,7 +732,7 @@ impl Interpreter {
                                     if evaleds.len() != 1 {
                                         Err(("a number of argument needs 1").to_string())
                                     } else {
-                                        (*self.env.logger.clone())(evaleds[0].to_string_display());
+                                        (*self.env.stdout.clone())(evaleds[0].to_string_display());
                                         Ok(ExecutionResult::Unit)
                                     }
                                 }
@@ -815,16 +842,16 @@ impl Interpreter {
                 Expr::Set(name, expr) => {
                     let r = self.execute_expr(*expr.clone())?;
                     self.env
-                        .update_entry(name.clone(), r)
+                        .update_define(name, r)
                         .map_err(|_| "set expr to undefined name".to_string())
                         .map(|_| ExecutionResult::Unit)
                 }
                 Expr::Let(name, binds, body) => {
                     let mut calced_bindeds = Vec::new();
                     for (name, expr) in &binds.0 {
-                        calced_bindeds.push((name.clone(), self.execute_expr(expr.clone())?));
+                        calced_bindeds.push((name as &str, self.execute_expr(expr.clone())?));
                     }
-                    self.env.enter_block();
+                    self.env.create_and_enter_flame();
                     self.env.add_defines(calced_bindeds);
                     let result = if let Some(name) = name {
                         let arg_ls = binds.0.iter().map(|x| x.0.clone()).collect();
@@ -832,9 +859,9 @@ impl Interpreter {
                             Arg::IdList(arg_ls, None),
                             body.clone(),
                             Uuid::new_v4().as_u128(),
-                            self.env.get_current_flame(),
+                            self.env.get_flame(),
                         );
-                        self.env.add_define(name.clone(), func);
+                        self.env.add_define(name, func);
 
                         self.execute_body_with_tail(body.clone())?
                     } else {
@@ -848,8 +875,8 @@ impl Interpreter {
                     let envs_depth = binds.0.len();
                     for (name, expr) in &binds.0 {
                         let r = self.execute_expr(expr.clone())?;
-                        self.env.add_define(name.to_string(), r);
-                        self.env.enter_block();
+                        self.env.add_define(name, r);
+                        self.env.create_and_enter_flame();
                     }
                     let result = self.execute_body_with_tail(body.clone())?;
                     tail_depth += envs_depth;
@@ -861,10 +888,10 @@ impl Interpreter {
                     if names.len() != names.iter().collect::<HashSet<_>>().len() {
                         Err("Cannot use same variable in bindings of letrec".to_string())
                     } else {
-                        self.env.enter_block();
+                        self.env.create_and_enter_flame();
                         let undefineds = names
                             .iter()
-                            .map(|x| (x.clone(), ExecutionResult::Undefined))
+                            .map(|x| (x as &str, ExecutionResult::Undefined))
                             .collect();
                         self.env.add_defines(undefineds);
 
@@ -873,7 +900,7 @@ impl Interpreter {
                             calced_bindeds.push((name.clone(), self.execute_expr(expr.clone())?));
                         }
                         for (name, result) in calced_bindeds {
-                            self.env.update_entry(name, result).unwrap();
+                            self.env.update_define(&name, result).unwrap();
                         }
                         let result = self.execute_body_with_tail(body.clone())?;
                         tail_depth += 1;
@@ -963,11 +990,11 @@ impl Interpreter {
                     continue;
                 }
                 Expr::Do(d) => {
-                    self.env.enter_block();
+                    self.env.create_and_enter_flame();
                     let mut map = HashMap::new();
                     let mut binds = Vec::new();
                     for (name, init, step) in &d.0 {
-                        binds.push((name.to_string(), self.execute_expr(init.clone())?));
+                        binds.push((name as &str, self.execute_expr(init.clone())?));
                         map.insert(name, step.clone());
                     }
                     self.env.add_defines(binds);
@@ -981,7 +1008,7 @@ impl Interpreter {
                             }
                             for (name, result) in updates {
                                 self.env
-                                    .update_entry(name, result)
+                                    .update_define(&name, result)
                                     .map_err(|_| "Cannot find such a identifier")?;
                             }
                         }
@@ -1004,9 +1031,9 @@ impl Interpreter {
                 }
             };
             for _ in 0..tail_depth {
-                self.env.exit_block();
+                self.env.break_flame();
             }
-            self.env.pop_flame();
+            // self.env.pop_flame();
             return r;
         }
     }
@@ -1015,15 +1042,15 @@ impl Interpreter {
         match define {
             Define::Define(name, expr) => {
                 let r = self.execute_expr(expr)?;
-                self.env.add_define(name, r);
+                self.env.add_define(&name, r);
             }
             Define::DefineList((name, arg, arg_rest), body) => self.env.add_define(
-                name,
+                &name,
                 ExecutionResult::Func(
                     Arg::IdList(arg, arg_rest),
                     body,
                     Uuid::new_v4().as_u128(),
-                    self.env.get_current_flame(),
+                    self.env.get_flame(),
                 ),
             ),
         }
@@ -1066,7 +1093,7 @@ pub enum ExecutionResult {
     String(String, u128),
     Bool(bool),
     Symbol(String),
-    Func(Arg, Body, u128, HashMap<String, (ExecutionResult, i32)>),
+    Func(Arg, Body, u128, Arc<Flame>),
     List(List),
     Unit,
     EmbeddedFunc(&'static str),
