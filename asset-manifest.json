@@ -3,13 +3,13 @@
     "main.css": "/mini-scheme/static/css/main.13d17bd0.chunk.css",
     "main.js": "/mini-scheme/static/js/main.5c54d024.chunk.js",
     "main.js.map": "/mini-scheme/static/js/main.5c54d024.chunk.js.map",
-    "runtime-main.js": "/mini-scheme/static/js/runtime-main.a44f1677.js",
-    "runtime-main.js.map": "/mini-scheme/static/js/runtime-main.a44f1677.js.map",
+    "runtime-main.js": "/mini-scheme/static/js/runtime-main.6c9fdc92.js",
+    "runtime-main.js.map": "/mini-scheme/static/js/runtime-main.6c9fdc92.js.map",
     "static/js/2.63b2a1b9.chunk.js": "/mini-scheme/static/js/2.63b2a1b9.chunk.js",
     "static/js/2.63b2a1b9.chunk.js.map": "/mini-scheme/static/js/2.63b2a1b9.chunk.js.map",
-    "static/js/3.b53e5c26.chunk.js": "/mini-scheme/static/js/3.b53e5c26.chunk.js",
-    "9ad562e7260d29820e88.module.wasm": "/mini-scheme/9ad562e7260d29820e88.module.wasm",
-    "static/js/3.b53e5c26.chunk.js.map": "/mini-scheme/static/js/3.b53e5c26.chunk.js.map",
+    "static/js/3.cc92b049.chunk.js": "/mini-scheme/static/js/3.cc92b049.chunk.js",
+    "f1dd8ccea18f745d9f17.module.wasm": "/mini-scheme/f1dd8ccea18f745d9f17.module.wasm",
+    "static/js/3.cc92b049.chunk.js.map": "/mini-scheme/static/js/3.cc92b049.chunk.js.map",
     "static/js/4.23e95c71.chunk.js": "/mini-scheme/static/js/4.23e95c71.chunk.js",
     "static/js/4.23e95c71.chunk.js.map": "/mini-scheme/static/js/4.23e95c71.chunk.js.map",
     "index.html": "/mini-scheme/index.html",
@@ -17,7 +17,7 @@
     "static/js/2.63b2a1b9.chunk.js.LICENSE.txt": "/mini-scheme/static/js/2.63b2a1b9.chunk.js.LICENSE.txt"
   },
   "entrypoints": [
-    "static/js/runtime-main.a44f1677.js",
+    "static/js/runtime-main.6c9fdc92.js",
     "static/js/2.63b2a1b9.chunk.js",
     "static/css/main.13d17bd0.chunk.css",
     "static/js/main.5c54d024.chunk.js"
