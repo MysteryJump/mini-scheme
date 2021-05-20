@@ -226,8 +226,9 @@ impl Env {
         self.current_flame = Arc::new(flame);
     }
     fn break_flame(&mut self) {
-        let parent = self.current_flame.parent.as_ref().unwrap();
-        self.current_flame = parent.clone();
+        if let Some(parent) = self.current_flame.parent.as_ref() {
+            self.current_flame = parent.clone();
+        }
     }
     fn get_flame(&self) -> Arc<Flame> {
         self.current_flame.clone()
