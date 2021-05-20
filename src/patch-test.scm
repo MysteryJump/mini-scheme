@@ -203,7 +203,60 @@
 (assert-deep (memq 'd '(a b c)) #f)
 (assert-deep (memq (list 'a) '(b (a) c)) #f)
 
+(assert-shallow (symbol? 'foo) #t)
+(assert-shallow (symbol? (car '(a b))) #t)
+(assert-shallow (symbol? "bar") #f)
+(assert-shallow (symbol? 'nil) #t)
+(assert-shallow (symbol? '()) #f)
+(assert-shallow (symbol? #f) #f)
+
+(assert-deep (symbol->string 'flying-fish) "flying-fish")
+(assert-deep (symbol->string 'Martin) "Martin")
+(assert-deep (symbol->string (string->symbol "Malvina")) "Malvina")
+
+(assert-shallow (string->symbol "mISSISSIppi") 'mISSISSIppi)
+(assert-shallow (eqv? 'bitBlt (string->symbol "bitBlt")) #t)
+(assert-shallow (eqv? 'LollyPop (string->symbol (symbol->string 'LollyPop))) #t)
+
+(assert-shallow (string? "test") #t)
+(assert-deep (string-append "test" "test") "testtest")
+
+(assert-shallow (procedure? car) #t)
+(assert-shallow (procedure? 'car) #f)
+(assert-shallow (procedure? (lambda (x) (* x x))) #t)
+(assert-shallow (procedure? '(lambda (x) (* x x))) #f)
+
+(assert-shallow (force (delay (+ 1 2))) 3)
+(assert-deep (let ((p (delay (+ 1 2)))) (list (force p) (force p))) '(3 3))
+(define integers
+    (letrec ((next
+        (lambda (n)
+            (delay (cons n (next (+ n 1)))))))
+    (next 0)))
+(define head (lambda (stream) (car (force stream))))
+(define tail (lambda (stream) (cdr (force stream))))
+(assert-shallow (head (tail (tail integers))) 2)
+
+(define count 0)
+(define p
+    (delay (begin (set! count (+ count 1))
+        (if (> count x)
+        count
+        (force p)))))
+(define x 5)
+(assert-shallow (promise? p) #t)
+(assert-shallow (force p) 6)
+(assert-shallow (promise? p) #t)
+(assert-shallow 
+    (begin (set! x 10)
+           (force p))
+    6)
+
+
 ; cannot manipulate cyclic reference such as below code
 ; (let ((x (list 'a 'b 'c)))
 ;   (set-cdr! (cdr (cdr x)) x)
 ;   x) 
+
+; `load` is not target for this test
+

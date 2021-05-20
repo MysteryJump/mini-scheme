@@ -155,6 +155,7 @@ pub struct Env {
     is_newborn: bool,
     str_consts_pairs: Mutex<HashMap<String, u128>>,
     list_store: Mutex<HashMap<u128, List>>,
+    delay_result: Mutex<HashMap<u128, ExecutionResult>>,
 }
 
 #[derive(Debug)]
@@ -199,6 +200,7 @@ impl Env {
         add_builtin!(builtins, "eq?", "neq?", "equal?");
         add_builtin!(builtins, "load");
         add_builtin!(builtins, "display");
+        add_builtin!(builtins, "force", "delay", "promise?");
 
         #[cfg(feature = "concurrent")]
         add_builtin!(builtins, "send-message", "get-result", "await", "sleep");
@@ -215,6 +217,7 @@ impl Env {
             is_newborn: true,
             str_consts_pairs: Mutex::new(HashMap::new()),
             list_store: Mutex::new(HashMap::new()),
+            delay_result: Mutex::new(HashMap::new()),
         }
     }
     fn create_and_enter_flame(&mut self) {
@@ -346,6 +349,12 @@ impl Env {
     pub fn replace_to_toplevel(&mut self) {
         self.current_flame = self.toplevel.clone();
     }
+    pub fn add_delay_result(&mut self, delay_id: &u128, result: ExecutionResult) {
+        self.delay_result.lock().unwrap().insert(*delay_id, result);
+    }
+    pub fn get_delay_result(&self, delay_id: &u128) -> Option<ExecutionResult> {
+        self.delay_result.lock().unwrap().get(delay_id).cloned()
+    }
 }
 
 impl Flame {
@@ -383,6 +392,7 @@ impl Clone for Env {
             builtins: self.builtins.clone(),
             toplevel: self.toplevel.clone(),
             list_store: Mutex::new(self.list_store.lock().unwrap().clone()),
+            delay_result: Mutex::new(self.delay_result.lock().unwrap().clone()),
         }
     }
 }
@@ -537,7 +547,6 @@ impl Interpreter {
                                         self.env.add_define(&id, r);
                                         let result = self.execute_body_with_tail(body)?;
                                         expr = result;
-                                        tail_depth += 1;
                                         continue;
                                     }
                                 }
@@ -591,7 +600,6 @@ impl Interpreter {
 
                                             let result = self.execute_body_with_tail(body)?;
                                             expr = result;
-                                            tail_depth += 1;
                                             continue;
                                         }
                                     } else if ids.len() != arg_apply.len() {
@@ -614,7 +622,6 @@ impl Interpreter {
                                         self.env.add_defines(binds);
                                         let result = self.execute_body_with_tail(body)?;
                                         expr = result;
-                                        tail_depth += 1;
                                         continue;
                                     }
                                 }
@@ -656,6 +663,16 @@ impl Interpreter {
                                 Err("the first argument needs id".to_string())
                             }
                         }
+                        ExecutionResult::EmbeddedFunc("delay") => {
+                            let first = arg_apply
+                                .first()
+                                .ok_or_else(|| "delay needs 1 arg".to_string())?
+                                .clone();
+                            Ok(ExecutionResult::Promise((
+                                Uuid::new_v4().as_u128(),
+                                (first, self.env.get_flame()),
+                            )))
+                        }
                         ExecutionResult::EmbeddedFunc(name) => {
                             let evaleds = arg_apply
                                 .iter()
@@ -687,6 +704,7 @@ impl Interpreter {
                                 "integer?" => execute_type_check(Types::Integer, &evaleds),
                                 "symbol?" => execute_type_check(Types::Symbol, &evaleds),
                                 "procedure?" => execute_type_check(Types::Proc, &evaleds),
+                                "promise?" => execute_type_check(Types::Promise, &evaleds),
                                 "not" => execute_not(&evaleds),
                                 "string->number" => {
                                     execute_conversion(ConvType::Str, ConvType::Num, &evaleds)
@@ -749,6 +767,27 @@ impl Interpreter {
                                     } else {
                                         (*self.env.stdout.clone())(evaleds[0].to_string_display());
                                         Ok(ExecutionResult::Unit)
+                                    }
+                                }
+                                "force" => {
+                                    if evaleds.len() != 1 {
+                                        Err(("force needs a number of argument 1").to_string())
+                                    } else if let ExecutionResult::Promise((
+                                        delay_id,
+                                        (expr, flame),
+                                    )) = &evaleds[0]
+                                    {
+                                        if let Some(r) = self.env.get_delay_result(delay_id) {
+                                            Ok(r)
+                                        } else {
+                                            let save = self.env.replace_flame(flame.clone());
+                                            let result = self.execute_expr(expr.clone())?;
+                                            self.env.replace_flame(save);
+                                            self.env.add_delay_result(delay_id, result.clone());
+                                            Ok(result)
+                                        }
+                                    } else {
+                                        Err("expected argument of type is promise?".to_string())
                                     }
                                 }
                                 #[cfg(feature = "concurrent")]
@@ -1051,10 +1090,9 @@ impl Interpreter {
             };
             if let Some(saved_flame) = saved_flame {
                 self.env.replace_flame(saved_flame);
-            } else {
-                for _ in 0..tail_depth {
-                    self.env.break_flame();
-                }
+            }
+            for _ in 0..tail_depth {
+                self.env.break_flame();
             }
 
             return r;
@@ -1065,6 +1103,7 @@ impl Interpreter {
         match define {
             Define::Define(name, expr) => {
                 let r = self.execute_expr(expr)?;
+                // println!("{:?}", self.env.get_flame());
                 self.env.add_define(&name, r);
             }
             Define::DefineList((name, arg, arg_rest), body) => self.env.add_define(
@@ -1122,6 +1161,7 @@ pub enum ExecutionResult {
     EmbeddedFunc(&'static str),
     Undefined,
     ActorUndefined,
+    Promise((u128, (Expr, Arc<Flame>))),
 }
 
 impl ExecutionResult {
@@ -1147,6 +1187,7 @@ impl ExecutionResult {
             }
             ExecutionResult::Undefined => false,
             ExecutionResult::ActorUndefined => false,
+            ExecutionResult::Promise(_) => false,
         }
     }
     /// do shallow compare
@@ -1183,6 +1224,7 @@ impl ExecutionResult {
             }
             ExecutionResult::Undefined => false,
             ExecutionResult::ActorUndefined => false,
+            ExecutionResult::Promise(_) => false,
         }
     }
 
@@ -1219,12 +1261,9 @@ impl From<ExecutionResult> for Expr {
             ExecutionResult::Unit => Expr::Const(().into()),
             ExecutionResult::EmbeddedFunc(s) => Expr::Id(s.to_string()),
             ExecutionResult::Undefined => panic!(),
-            ExecutionResult::ActorResultId(_) => {
-                panic!();
-            }
-            ExecutionResult::ActorUndefined => {
-                panic!()
-            }
+            ExecutionResult::ActorResultId(_) => panic!(),
+            ExecutionResult::ActorUndefined => panic!(),
+            ExecutionResult::Promise(_) => panic!(),
         }
     }
 }
@@ -1255,6 +1294,7 @@ impl Display for ExecutionResult {
             ExecutionResult::Undefined => write!(f, "undefined"),
             ExecutionResult::ActorResultId(r) => write!(f, "#<actor_result:{}>", r),
             ExecutionResult::ActorUndefined => write!(f, "#<actor_void>"),
+            ExecutionResult::Promise(_) => write!(f, "#<promise>"),
         }
     }
 }

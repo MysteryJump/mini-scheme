@@ -130,6 +130,7 @@ pub enum Types {
     Pair,
     Null,
     Integer,
+    Promise,
 }
 
 pub fn execute_type_check(expected: Types, actually: &[ExecutionResult]) -> EResult {
@@ -142,7 +143,10 @@ pub fn execute_type_check(expected: Types, actually: &[ExecutionResult]) -> ERes
             Types::Num => matches!(f, ExecutionResult::Number(_)),
             Types::Symbol => matches!(f, ExecutionResult::Symbol(_)),
             Types::Bool => matches!(f, ExecutionResult::Bool(_)),
-            Types::Proc => matches!(f, ExecutionResult::Func(_, _, _, _)),
+            Types::Proc => matches!(
+                f,
+                ExecutionResult::Func(_, _, _, _) | ExecutionResult::EmbeddedFunc(_)
+            ),
             Types::List => matches!(f, ExecutionResult::List(l) if l.is_list()),
             Types::Pair => {
                 if let ExecutionResult::List(l) = f {
@@ -155,6 +159,7 @@ pub fn execute_type_check(expected: Types, actually: &[ExecutionResult]) -> ERes
                 matches!(f, ExecutionResult::List(List::Nil))
             }
             Types::Integer => matches!(f, ExecutionResult::Number(n) if n.is_integer()),
+            Types::Promise => matches!(f, ExecutionResult::Promise(_)),
         }))
     }
 }

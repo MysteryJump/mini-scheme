@@ -196,5 +196,7 @@ fn test_list_func() {
     let r = exec.execute_func("x", vec![Box::new(list_inner)]).unwrap();
     if let Either::Left(l) = r {
         assert_eq!(r#"("30" 34 32 (23))"#, l.to_string());
+    } else {
+        panic!();
     }
 }
