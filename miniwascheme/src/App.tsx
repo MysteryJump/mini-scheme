@@ -15,15 +15,16 @@ function App() {
 
   return (
     <div className="w-screen h-screen bg-gray-200">
-      <div className="flex flex-col p-4 justify-start">
+      <div className="flex flex-col p-4 justify-start h-screen">
         <h1 className="text-xl">Miniwascheme - Web Playground</h1>
-        <div className="flex w-full pt-4">
+        <div className="flex w-full pt-4 h-full">
           <textarea
-            className="flex-grow mr-2"
+            className="flex-grow mr-2 resize-none p-1"
             value={text}
             onChange={(e) => setText(e.target.value)}
+            spellCheck={false}
           />
-          <textarea className="flex-grow ml-2" value={result} />
+          <textarea className="flex-grow ml-2 resize-none p-1" value={result} />
         </div>
         <div className="p-2">
           <button

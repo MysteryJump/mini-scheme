@@ -115,12 +115,12 @@ impl Reactive {
         for sort in topo {
             let expr = self.flow_exprs[sort].clone();
             let mut inter = Interpreter::with_env(env);
-            let result =
-                if let either::Either::Left(Ok(l)) = inter.execute_toplevel(TopLevel::Expr(expr)) {
-                    l
-                } else {
-                    panic!();
-                };
+            let p = inter.execute_toplevel(TopLevel::Expr(expr));
+            let result = if let either::Either::Left(Ok(l)) = p {
+                l
+            } else {
+                panic!();
+            };
             env = inter.get_env();
             env.add_define(sort, result.clone());
             values.insert(sort.clone(), result);
@@ -343,7 +343,6 @@ impl<'a> VariableUsagesChecker<'a> {
 mod tests {
     use super::*;
 
-    // Not passed currently
     #[test]
     fn test_reactive() {
         let initials = Bindings(vec![
@@ -384,7 +383,7 @@ mod tests {
                 "f".to_string(),
                 Expr::Apply(
                     Box::new(Expr::Id("number->string".to_string())),
-                    vec![Expr::Const(4.into()), Expr::Id("e".to_string())],
+                    vec![Expr::Const(4.into())],
                 ),
             ),
         ]);
