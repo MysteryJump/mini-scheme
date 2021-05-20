@@ -92,7 +92,7 @@ impl Reactive {
 
     fn calculate_initial_values(&self, initials: &Bindings) -> HashMap<String, ExecutionResult> {
         let mut values = HashMap::new();
-        let env = Env::new(Arc::new(|_| {}), None);
+        let mut env = Env::new(Arc::new(|_| {}), None);
         for (id, expr) in &initials.0 {
             let mut inter = Interpreter::new(Arc::new(|_| {}), None);
             let r = inter.execute_toplevel(TopLevel::Expr(expr.clone()));

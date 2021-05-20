@@ -215,8 +215,8 @@
 (assert-deep (symbol->string (string->symbol "Malvina")) "Malvina")
 
 (assert-shallow (string->symbol "mISSISSIppi") 'mISSISSIppi)
-(assert-shallow (eqv? 'bitBlt (string->symbol "bitBlt")) #t)
-(assert-shallow (eqv? 'LollyPop (string->symbol (symbol->string 'LollyPop))) #t)
+(assert-shallow (equal? 'bitBlt (string->symbol "bitBlt")) #t)
+(assert-shallow (equal? 'LollyPop (string->symbol (symbol->string 'LollyPop))) #t)
 
 (assert-shallow (string? "test") #t)
 (assert-deep (string-append "test" "test") "testtest")

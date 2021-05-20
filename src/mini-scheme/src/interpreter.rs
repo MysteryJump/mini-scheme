@@ -144,18 +144,19 @@ impl ActorMap {
     }
 }
 
+#[derive(Clone)]
 pub struct Env {
     toplevel: Arc<Flame>,
     current_flame: Arc<Flame>,
-    used_builtins: Mutex<HashSet<&'static str>>,
+    used_builtins: HashSet<&'static str>,
     builtins: HashSet<&'static str>,
     stdout: Arc<dyn Fn(String) + Sync + Send>,
     cancellation_token: Option<Arc<AtomicBool>>,
     reactive_properties: Option<Arc<Mutex<Reactive>>>,
     is_newborn: bool,
-    str_consts_pairs: Mutex<HashMap<String, u128>>,
-    list_store: Mutex<HashMap<u128, List>>,
-    delay_result: Mutex<HashMap<u128, ExecutionResult>>,
+    str_consts_pairs: HashMap<String, u128>,
+    list_store: HashMap<u128, List>,
+    delay_result: HashMap<u128, ExecutionResult>,
 }
 
 #[derive(Debug)]
@@ -209,15 +210,15 @@ impl Env {
         Self {
             current_flame: toplevel.clone(),
             toplevel,
-            used_builtins: Mutex::new(HashSet::new()),
+            used_builtins: HashSet::new(),
             builtins,
             stdout,
             cancellation_token,
             reactive_properties: None,
             is_newborn: true,
-            str_consts_pairs: Mutex::new(HashMap::new()),
-            list_store: Mutex::new(HashMap::new()),
-            delay_result: Mutex::new(HashMap::new()),
+            str_consts_pairs: HashMap::new(),
+            list_store: HashMap::new(),
+            delay_result: HashMap::new(),
         }
     }
     fn create_and_enter_flame(&mut self) {
@@ -236,7 +237,7 @@ impl Env {
         self.current_flame = flame;
         current
     }
-    fn update_define(&self, name: &str, value: ExecutionResult) -> Result<(), ()> {
+    fn update_define(&mut self, name: &str, value: ExecutionResult) -> Result<(), ()> {
         if let Some(react) = &self.reactive_properties {
             if react
                 .lock()
@@ -249,7 +250,7 @@ impl Env {
         }
 
         if let ExecutionResult::List(l @ List::Cons(_, _, rf)) = &value {
-            self.list_store.lock().unwrap().insert(*rf, l.clone());
+            self.list_store.insert(*rf, l.clone());
         }
 
         let mut cdefs = self.current_flame.defineds.lock().unwrap();
@@ -271,24 +272,24 @@ impl Env {
             Err(())
         }
     }
-    pub fn add_define(&self, name: &str, value: ExecutionResult) {
+    pub fn add_define(&mut self, name: &str, value: ExecutionResult) {
         let mut cdefs = self.current_flame.defineds.lock().unwrap();
         if let Some(s) = self.builtins.get(name) {
-            self.used_builtins.lock().unwrap().insert(s);
+            self.used_builtins.insert(s);
         }
         if let ExecutionResult::List(l @ List::Cons(_, _, rf)) = &value {
-            self.list_store.lock().unwrap().insert(*rf, l.clone());
+            self.list_store.insert(*rf, l.clone());
         }
         cdefs.insert(name.to_string(), value);
     }
-    pub fn add_defines(&self, pairs: Vec<(&str, ExecutionResult)>) {
+    pub fn add_defines(&mut self, pairs: Vec<(&str, ExecutionResult)>) {
         pairs
             .into_iter()
             .for_each(|(name, value)| self.add_define(name, value));
     }
     pub fn get_define(&self, name: &str) -> Option<ExecutionResult> {
         if let Some(s) = self.builtins.get(name) {
-            if !self.used_builtins.lock().unwrap().contains(name) {
+            if !self.used_builtins.contains(name) {
                 return Some(ExecutionResult::EmbeddedFunc(s));
             }
         }
@@ -305,7 +306,7 @@ impl Env {
                 if cdefs.contains_key(name) {
                     let r = cdefs[name].clone();
                     let r = if let ExecutionResult::List(List::Cons(_, _, rf)) = &r {
-                        if let Some(l) = self.list_store.lock().unwrap().get(rf).cloned() {
+                        if let Some(l) = self.list_store.get(rf).cloned() {
                             Some(ExecutionResult::List(l))
                         } else {
                             Some(r)
@@ -321,7 +322,7 @@ impl Env {
         } else {
             let r = cdefs[name].clone();
             if let ExecutionResult::List(List::Cons(_, _, rf)) = &r {
-                if let Some(l) = self.list_store.lock().unwrap().get(rf).cloned() {
+                if let Some(l) = self.list_store.get(rf).cloned() {
                     Some(ExecutionResult::List(l))
                 } else {
                     Some(r)
@@ -331,14 +332,15 @@ impl Env {
             }
         }
     }
-    pub fn get_const_str_addr(&self, name: String) -> u128 {
-        #[allow(clippy::map_entry)]
-        if self.str_consts_pairs.lock().unwrap().contains_key(&name) {
-            self.str_consts_pairs.lock().unwrap()[&name]
-        } else {
+    pub fn get_const_str_addr(&mut self, name: String) -> u128 {
+        if let std::collections::hash_map::Entry::Vacant(e) =
+            self.str_consts_pairs.entry(name.clone())
+        {
             let addr = Uuid::new_v4().as_u128();
-            self.str_consts_pairs.lock().unwrap().insert(name, addr);
+            e.insert(addr);
             addr
+        } else {
+            self.str_consts_pairs[&name]
         }
     }
     pub fn set_reactive(&mut self, reactive: Arc<Mutex<Reactive>>) {
@@ -350,10 +352,10 @@ impl Env {
         self.current_flame = self.toplevel.clone();
     }
     pub fn add_delay_result(&mut self, delay_id: &u128, result: ExecutionResult) {
-        self.delay_result.lock().unwrap().insert(*delay_id, result);
+        self.delay_result.insert(*delay_id, result);
     }
     pub fn get_delay_result(&self, delay_id: &u128) -> Option<ExecutionResult> {
-        self.delay_result.lock().unwrap().get(delay_id).cloned()
+        self.delay_result.get(delay_id).cloned()
     }
 }
 
@@ -376,24 +378,6 @@ impl std::fmt::Debug for Env {
             .field("current_flame", &self.current_flame)
             .field("str_consts_pairs", &self.str_consts_pairs)
             .finish()
-    }
-}
-
-impl Clone for Env {
-    fn clone(&self) -> Self {
-        Self {
-            str_consts_pairs: Mutex::new(self.str_consts_pairs.lock().unwrap().clone()),
-            stdout: self.stdout.clone(),
-            cancellation_token: self.cancellation_token.clone(),
-            reactive_properties: self.reactive_properties.clone(),
-            is_newborn: self.is_newborn,
-            current_flame: self.current_flame.clone(),
-            used_builtins: Mutex::new(self.used_builtins.lock().unwrap().clone()),
-            builtins: self.builtins.clone(),
-            toplevel: self.toplevel.clone(),
-            list_store: Mutex::new(self.list_store.lock().unwrap().clone()),
-            delay_result: Mutex::new(self.delay_result.lock().unwrap().clone()),
-        }
     }
 }
 
@@ -517,7 +501,7 @@ impl Interpreter {
                 }
             }
             let r = match &expr {
-                Expr::Const(c) => Ok(c.clone().into_with_env(&self.env)),
+                Expr::Const(c) => Ok(c.clone().into_with_env(&mut self.env)),
                 Expr::Id(id) => self
                     .env
                     .get_define(id)
@@ -876,7 +860,7 @@ impl Interpreter {
                         if matches!(c, Const::Unit) {
                             ExecutionResult::List(List::Nil)
                         } else {
-                            c.clone().into_with_env(&self.env)
+                            c.clone().into_with_env(&mut self.env)
                         }
                     }
                     SExpr::Id(sym) => ExecutionResult::Symbol(sym.clone()),
@@ -1269,7 +1253,7 @@ impl From<ExecutionResult> for Expr {
 }
 
 impl Const {
-    fn into_with_env(self, env: &Env) -> ExecutionResult {
+    fn into_with_env(self, env: &mut Env) -> ExecutionResult {
         match self {
             Const::Str(s) => ExecutionResult::String(s.to_string(), env.get_const_str_addr(s)),
             Const::Bool(b) => ExecutionResult::Bool(b),
