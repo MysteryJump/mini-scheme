@@ -399,7 +399,7 @@ impl Parser {
                 }
                 let name = {
                     let n = ids[0].clone();
-                    ids = (&ids[1..]).to_vec();
+                    ids = ids[1..].to_vec();
                     n
                 };
                 let ids = (
@@ -467,7 +467,7 @@ impl Parser {
                 }
                 let name = {
                     let n = ids[0].clone();
-                    ids = (&ids[1..]).to_vec();
+                    ids = ids[1..].to_vec();
                     n
                 };
                 let ids = (

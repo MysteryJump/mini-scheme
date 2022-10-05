@@ -45,7 +45,7 @@ pub enum Define {
     DefineList((String, Vec<String>, Option<String>), Body),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Const {
     Str(String),
     Bool(bool),
@@ -108,7 +108,7 @@ pub enum SExpr {
     SExprs(Vec<SExpr>, Option<Box<SExpr>>),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Arg {
     Id(String),
     IdList(Vec<String>, Option<String>),

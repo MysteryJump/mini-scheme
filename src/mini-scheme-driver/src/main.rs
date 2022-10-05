@@ -135,7 +135,7 @@ async fn call_repl(mut repl: Repl, line: String) -> Repl {
 
 fn do_debug() {
     mini_scheme::execute(
-        &r#"
+        r#"
         (define a 50)
         (define (t y) (define a 30) (if y 3 a))
           (t #f)

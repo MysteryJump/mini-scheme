@@ -239,14 +239,14 @@ impl<'a> VariableUsagesChecker<'a> {
                 let mut allowed = allowed_variables.to_vec();
                 match l {
                     Arg::Id(id) => {
-                        allowed.push(&id);
+                        allowed.push(id);
                         self.check_body_variables_usages(x, &allowed)
                     }
                     Arg::IdList(ids, opt) => {
                         if let Some(opt) = opt {
                             allowed.push(opt as &str);
                         }
-                        ids.iter().for_each(|x| allowed.push(&x));
+                        ids.iter().for_each(|x| allowed.push(x));
                         self.check_body_variables_usages(x, &allowed)
                     }
                 }
@@ -259,7 +259,7 @@ impl<'a> VariableUsagesChecker<'a> {
             }
             Expr::Quote(_) => true,
             Expr::Set(v, expr) => {
-                self.used_variables.push(&(v as &str));
+                self.used_variables.push(v as &str);
                 allowed_variables.contains(&(v as &str))
                     && self.check_expr_variables_usages_(expr, allowed_variables)
             }

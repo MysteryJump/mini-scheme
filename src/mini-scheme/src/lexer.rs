@@ -6,7 +6,7 @@ pub struct Token {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
     OpenParen,
     CloseParen,
